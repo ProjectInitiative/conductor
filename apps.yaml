@@ -1,17 +1,48 @@
-# Conductor app catalog. Declares deployable pieces.
-# Same contract shape as homelab/apps.yaml. The generator emits Argo CD
-# Application CRDs from this.
+# Conductor app catalog. Declares deployable pieces and the scheduler model
+# profiles. The cdk8s generator (generator/main.py) emits Argo CD Application
+# CRDs from this + clusters/<cluster>.yaml.
+defaults:
+  repoURL: https://github.com/projectinitiative/conductor.git
+  targetRevision: HEAD
+
+# Scheduler model profiles. These are injected into the `models` Application
+# as a kustomize patch onto the conductor-model-profiles ConfigMap.
+# See DESIGN.md §2.1.
+modelProfiles:
+  deepseek-v4-flash-vision-exp:
+    priority: 1
+    servedModelName: deepseek-v4-flash-vision-exp
+    head: {deployment: deepseek-parity-head, hostIP: 172.16.4.55, port: 8000}
+    worker: {deployment: deepseek-parity-worker, hostIP: 172.16.4.56}
+    health: {path: /health, timeout: 3600s}
+    quantum: {max_requests: 32, max_seconds: 600}
+    min_dwell: 900s
+    cooldown: 300s
+  GLM-5.3-Flash-EXL3:
+    priority: 2
+    servedModelName: GLM-5.3-Flash-EXL3
+    head: {deployment: glm53-exl3-head, hostIP: 172.16.4.55, port: 8888}
+    worker: {deployment: glm53-exl3-worker, hostIP: 172.16.4.56}
+    health: {path: /health, timeout: 3600s}
+    quantum: {max_requests: 16, max_seconds: 600}
+    min_dwell: 900s
+    cooldown: 300s
+  qwen3.8-flash-next:
+    priority: 3
+    servedModelName: qwen3.8-flash-next
+    head: {deployment: qwen38-flash-head, hostIP: 172.16.4.55, port: 8888}
+    worker: {deployment: qwen38-flash-worker, hostIP: 172.16.4.56}
+    health: {path: /health, timeout: 3600s}
+    quantum: {max_requests: 16, max_seconds: 600}
+    min_dwell: 900s
+    cooldown: 300s
+
 catalog:
   router:
-    chart: litellm
-    repoURL: https://ghcr.io/berriai/litellm
-    targetRevision: main
-    helm:
-      values: |
-        serviceAccount:
-          create: true
-          name: conductor-router
-        # Virtual model names → scheduler gateway (see manifests/router)
+    path: manifests/router
+    kustomize: {}
+    syncPolicy:
+      syncOptions: ["CreateNamespace=true", "ServerSideApply=true"]
   scheduler:
     path: manifests/scheduler
     kustomize: {}
