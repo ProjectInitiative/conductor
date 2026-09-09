@@ -90,6 +90,24 @@
             };
           scheduler = mkGoModule { pname = "conductor"; };
 
+          # OCI container for the conductor multi-headed binary (server + function).
+          conductorImage = pkgs.dockerTools.buildImage {
+            name = "conductor";
+            tag = version;
+            copyToRoot = pkgs.buildEnv {
+              name = "conductor-root";
+              paths = [ scheduler ];
+              pathsToLink = [ "/bin" ];
+            };
+            config = {
+              Entrypoint = [ "/bin/conductor" ];
+              ExposedPorts = {
+                "8000/tcp" = { };
+                "8888/tcp" = { };
+              };
+            };
+          };
+
           generate-manifests = import ./nix/scripts/generate-manifests.nix {
             inherit pkgs;
             pythonEnv = generatorEnv;
@@ -100,6 +118,7 @@
           packages = {
             default = scheduler;
             conductor = scheduler;
+            conductor-image = conductorImage;
             conductor-function = mkGoModule {
               pname = "conductor-function";
               subPackages = [ "./cmd/conductor" ];

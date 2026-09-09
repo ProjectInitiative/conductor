@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  flake-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-install-action@v4
+      - uses: DeterminateSystems/magic-nix-cache-action@v8
+      - name: Nix flake check (formatting + tests)
+        run: nix flake check --all-systems
+
+  build:
+    runs-on: ubuntu-latest
+    needs: flake-check
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-install-action@v4
+      - uses: DeterminateSystems/magic-nix-cache-action@v8
+      - name: Build conductor binary
+        run: nix build .#conductor --no-link
+      - name: Build generator env
+        run: nix build .#generate-manifests --no-link
+
+  generate-manifests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-install-action@v4
+      - uses: DeterminateSystems/magic-nix-cache-action@v8
+      - name: Generate manifests
+        run: |
+          nix run .#generate-manifests
+          git diff --exit-code .direnv/manifests || \
+            echo "::warning::manifest drift detected (regenerate locally and commit)"
