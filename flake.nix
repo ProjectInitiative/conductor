@@ -39,7 +39,13 @@
       ];
 
       perSystem =
-        { config, pkgs, lib, system, ... }:
+        {
+          config,
+          pkgs,
+          lib,
+          system,
+          ...
+        }:
         let
           # ------------------------------------------------------------------
           # Python (cdk8s generator) via uv2nix — mirrors homelab/generator
@@ -67,7 +73,10 @@
           version = "0.1.0";
           rev = "dirty";
           mkGoModule =
-            { pname, subPackages ? [ "." ] }:
+            {
+              pname,
+              subPackages ? [ "." ],
+            }:
             pkgs.buildGoModule {
               inherit pname subPackages;
               inherit version;
