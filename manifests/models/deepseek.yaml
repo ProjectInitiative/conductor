@@ -82,7 +82,19 @@ spec:
           image: ghcr.io/anemll/dspark-vllm-gx10:0.1.1
           imagePullPolicy: IfNotPresent
           command: ["/bin/bash", "-lc"]
-          args: ["sleep infinity"]
+          # rank-1 worker: joins the head's MP distributed server on 172.16.4.55:25000.
+          # Must match the head's --distributed-executor-backend / TP and master addr.
+          args:
+            - |
+              set -a
+              export MASTER_ADDR=172.16.4.55 MASTER_PORT=25000 NNODES=2 NODE_RANK=1 HEADLESS=1
+              export VLLM_HOST_IP=172.16.4.56 WORKER_VLLM_HOST_IP=172.16.4.56
+              export VLLM_HOST=0.0.0.0 VLLM_PORT=8000
+              set +a
+              exec /usr/local/bin/vllm serve deepseek-ai/DeepSeek-V4-Flash-Vision-Exp \
+                --host 0.0.0.0 --port 8000 --served-model-name deepseek-v4-flash-vision-exp \
+                --distributed-executor-backend mp --tensor-parallel-size 2 --pipeline-parallel-size 1 \
+                --nnodes 2 --node-rank 1 --master-addr 172.16.4.55 --master-port 25000 --headless
           resources:
             requests:
               cpu: "16"
