@@ -1,0 +1,20 @@
+# Tailscale-exposed entry point. Routes :80 -> the LiteLLM router (:8000), which
+# forwards by model name to the Conductor gateway.
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai
+  namespace: llm-test
+  annotations:
+    tailscale.com/hostname: "ai"
+    tailscale.com/proxy-group: mc-ingress-proxy
+spec:
+  type: LoadBalancer
+  loadBalancerClass: tailscale
+  selector:
+    app: litellm
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 8000

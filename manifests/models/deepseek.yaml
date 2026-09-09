@@ -1,0 +1,101 @@
+# DeepSeek head (rank 0, serves API). Default replicas:0 — the scheduler scales
+# this up. Full serving spec (init container patch-staging, env profile, JIT
+# caches) is filled in from the model profiles / homelab parity lane.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: deepseek-parity-head
+  namespace: llm-test
+  labels:
+    app: deepseek-parity-head
+    conductor.io/model: deepseek-v4-flash-vision-exp
+spec:
+  replicas: 0
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: deepseek-parity-head
+  template:
+    metadata:
+      labels:
+        app: deepseek-parity-head
+        conductor.io/model: deepseek-v4-flash-vision-exp
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      nodeSelector:
+        kubernetes.io/hostname: chronometer
+      containers:
+        - name: vllm
+          image: ghcr.io/anemll/dspark-vllm-gx10:0.1.1
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "-lc"]
+          args: ["exec /usr/local/bin/vllm serve deepseek-ai/DeepSeek-V4-Flash-Vision-Exp --host 0.0.0.0 --port 8000 --served-model-name deepseek-v4-flash-vision-exp"]
+          ports:
+            - name: http
+              containerPort: 8000
+          resources:
+            requests:
+              cpu: "16"
+              memory: 64Gi
+              nvidia.com/gpu: "1"
+            limits:
+              cpu: "32"
+              memory: 128Gi
+              nvidia.com/gpu: "1"
+          volumeMounts:
+            - name: models
+              mountPath: /models
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: model-cache
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: deepseek-parity-worker
+  namespace: llm-test
+  labels:
+    app: deepseek-parity-worker
+    conductor.io/model: deepseek-v4-flash-vision-exp
+spec:
+  replicas: 0
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: deepseek-parity-worker
+  template:
+    metadata:
+      labels:
+        app: deepseek-parity-worker
+        conductor.io/model: deepseek-v4-flash-vision-exp
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      nodeSelector:
+        kubernetes.io/hostname: sextant
+      containers:
+        - name: vllm
+          image: ghcr.io/anemll/dspark-vllm-gx10:0.1.1
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "-lc"]
+          args: ["sleep infinity"]
+          resources:
+            requests:
+              cpu: "16"
+              memory: 64Gi
+              nvidia.com/gpu: "1"
+            limits:
+              cpu: "32"
+              memory: 128Gi
+              nvidia.com/gpu: "1"
+          volumeMounts:
+            - name: models
+              mountPath: /models
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: model-cache

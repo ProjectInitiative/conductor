@@ -1,0 +1,73 @@
+# Fission container-executor environment that runs the Conductor multi-headed
+# binary in "function" mode. The same image builds both the scheduler and the
+# Fission functions. No source archive is used: the function IS the container.
+apiVersion: fission.io/v1
+kind: Environment
+metadata:
+  name: conductor
+  namespace: llm-test
+spec:
+  version: 3
+  runtime:
+    image: ghcr.io/projectinitiative/conductor:0.1.0
+    container:
+      # Conductor runs its HTTP function server on FISSION_FUNCTION_PORT (8888).
+      command:
+        - /usr/local/bin/conductor
+        - function
+  defaultPoolSize: 1
+  # In-cluster k8s action is expected to be provided by the cluster (see DESIGN.md).
+  # The conductor ServiceAccount grants the scheduler/functions the needed RBAC.
+  allowedFunctionsPerPod: 1
+---
+apiVersion: fission.io/v1
+kind: Function
+metadata:
+  name: conductor-status
+  namespace: llm-test
+spec:
+  environment: conductor
+  invokeStrategy:
+    strategy: newdeploy
+    executionStrategy:
+      minScale: 1
+      maxScale: 1
+---
+apiVersion: fission.io/v1
+kind: Function
+metadata:
+  name: conductor-model-ready
+  namespace: llm-test
+spec:
+  environment: conductor
+  invokeStrategy:
+    strategy: newdeploy
+    executionStrategy:
+      minScale: 1
+      maxScale: 1
+---
+apiVersion: fission.io/v1
+kind: HTTPTrigger
+metadata:
+  name: conductor-status
+  namespace: llm-test
+spec:
+  relativeURL: /conductor/status
+  method: GET
+  functionref:
+    name: conductor-status
+    type: function
+---
+# Fire when a model *-head Deployment becomes Ready, to finalize a swap.
+apiVersion: fission.io/v1
+kind: KubernetesWatchTrigger
+metadata:
+  name: conductor-model-ready
+  namespace: llm-test
+spec:
+  namespace: llm-test
+  type: deployment
+  labelSelector: conductor.io/model
+  functionref:
+    name: conductor-model-ready
+    type: function

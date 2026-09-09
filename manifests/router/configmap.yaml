@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: litellm-config
+  namespace: llm-test
+data:
+  config.yaml: |
+    model_list:
+      - model_name: deepseek-v4-flash-vision-exp
+        litellm_params:
+          model: hosted_vllm/deepseek-v4-flash-vision-exp
+          api_base: http://conductor:8000/v1
+          api_key: os.environ/VLLM_API_KEY
+      - model_name: GLM-5.3-Flash-EXL3
+        litellm_params:
+          model: hosted_vllm/GLM-5.3-Flash-EXL3
+          api_base: http://conductor:8000/v1
+          api_key: os.environ/VLLM_API_KEY
+      - model_name: qwen3.8-flash-next
+        litellm_params:
+          model: hosted_vllm/qwen3.8-flash-next
+          api_base: http://conductor:8000/v1
+          api_key: os.environ/VLLM_API_KEY
+    general_settings:
+      master_key: os.environ/LITELLM_MASTER_KEY

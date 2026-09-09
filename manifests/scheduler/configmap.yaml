@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: conductor-state
+  namespace: llm-test
+data:
+  # Single-flight residency state. The scheduler reconciles this.
+  state.yaml: |
+    resident: ""
+    desired: ""
+    status: idle
+    started_at: ""
