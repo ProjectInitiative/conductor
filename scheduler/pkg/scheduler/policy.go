@@ -101,6 +101,21 @@ func (p *Policy) Len(model string) int {
 // Resident returns the current resident model ("" if none).
 func (p *Policy) Resident() string { return p.resident }
 
+// Names returns the model names in priority order (a copy, safe to iterate).
+func (p *Policy) Names() []string {
+	out := make([]string, len(p.order))
+	copy(out, p.order)
+	return out
+}
+
+// Model returns the scheduling params for a model, or nil if unknown.
+func (p *Policy) Model(name string) *Model {
+	if m, ok := p.models[name]; ok {
+		return m
+	}
+	return nil
+}
+
 // Admit decides the outcome for an incoming request for model at time now.
 func (p *Policy) Admit(model string) RequestOutcome {
 	now := p.clock.Now()

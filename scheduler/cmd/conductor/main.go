@@ -12,6 +12,7 @@ import (
 
 	"github.com/projectinitiative/conductor/pkg/fission"
 	"github.com/projectinitiative/conductor/pkg/gateway"
+	"github.com/projectinitiative/conductor/pkg/scheduler"
 )
 
 // Version is injected at build time via ldflags (see flake.nix).
@@ -19,16 +20,23 @@ var Version = "dev"
 
 func main() {
 	if len(os.Args) < 2 {
-		gateway.Run(gateway.Config{})
+		runServer()
 		return
 	}
 	switch os.Args[1] {
 	case "server":
-		gateway.Run(gateway.Config{})
+		runServer()
 	case "function":
-		fission.Run(os.Args[2:])
+		// A dedicated engine for the function surface (models would be loaded
+		// from the conductor-model-profiles ConfigMap at runtime).
+		engine := scheduler.NewEngine(nil, nil)
+		fission.NewServer(engine, nil).Run(os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "Usage: %s [server|function <op>]\n", os.Args[0])
 		os.Exit(1)
 	}
+}
+
+func runServer() {
+	gateway.Run(gateway.Config{})
 }
