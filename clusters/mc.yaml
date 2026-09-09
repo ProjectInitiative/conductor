@@ -1,0 +1,20 @@
+name: mc
+server: https://172.16.1.50:6443
+project: conductor
+argoNamespace: argocd-mc
+apps:
+  - name: rbac
+    namespace: llm-test
+  - name: scheduler
+    namespace: llm-test
+    image:
+      name: ghcr.io/projectinitiative/conductor
+      newTag: 0.1.0
+  - name: fission
+    namespace: llm-test
+  - name: models
+    namespace: llm-test
+  - name: services
+    namespace: llm-test
+  - name: router
+    namespace: llm-test

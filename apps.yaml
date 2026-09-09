@@ -1,0 +1,31 @@
+# Conductor app catalog. Declares deployable pieces.
+# Same contract shape as homelab/apps.yaml. The generator emits Argo CD
+# Application CRDs from this.
+catalog:
+  router:
+    chart: litellm
+    repoURL: https://ghcr.io/berriai/litellm
+    targetRevision: main
+    helm:
+      values: |
+        serviceAccount:
+          create: true
+          name: conductor-router
+        # Virtual model names → scheduler gateway (see manifests/router)
+  scheduler:
+    path: manifests/scheduler
+    kustomize: {}
+    syncPolicy:
+      syncOptions: ["CreateNamespace=true", "ServerSideApply=true"]
+  fission:
+    path: manifests/fission
+    kustomize: {}
+  models:
+    path: manifests/models
+    kustomize: {}
+  rbac:
+    path: manifests/rbac
+    kustomize: {}
+  services:
+    path: manifests/services
+    kustomize: {}

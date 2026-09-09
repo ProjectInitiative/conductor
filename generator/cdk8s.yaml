@@ -1,0 +1,12 @@
+language: python
+app: python main.py
+imports:
+  # Argo CD CRDs
+  - https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/crds/application-crd.yaml
+  - https://raw.githubusercontent.com/argoproj/argo-cd/refs/heads/master/manifests/crds/applicationset-crd.yaml
+  - https://raw.githubusercontent.com/argoproj/argo-cd/refs/heads/master/manifests/crds/appproject-crd.yaml
+  # Fission CRDs (functions, environments, triggers, packages)
+  - https://raw.githubusercontent.com/fission/fission/main/charts/fission-all/crds/fission.io_functions.yaml
+  - https://raw.githubusercontent.com/fission/fission/main/charts/fission-all/crds/fission.io_environments.yaml
+  - https://raw.githubusercontent.com/fission/fission/main/charts/fission-all/crds/fission.io_triggers.yaml
+  - https://raw.githubusercontent.com/fission/fission/main/charts/fission-all/crds/fission.io_packages.yaml
