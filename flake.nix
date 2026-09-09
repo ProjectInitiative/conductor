@@ -146,11 +146,15 @@
             tests =
               pkgs.runCommand "run-tests"
                 {
-                  nativeBuildInputs = with pkgs; [ go ];
+                  nativeBuildInputs = with pkgs; [
+                    go
+                    gcc
+                  ];
                   src = ./.;
                 }
                 ''
                   export HOME="$TMPDIR"
+                  export CGO_ENABLED=0
                   cd $src/scheduler
                   go test ./...
                   touch $out
