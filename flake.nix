@@ -110,7 +110,10 @@
             };
           };
 
-          devShells.default = config.devenv.shells.default;
+          devenv.shells.default = {
+            imports = [ ./devenv.nix ];
+            devenv.root = toString ./.;
+          };
 
           checks = {
             formatting =
