@@ -159,3 +159,16 @@ func TestHealth(t *testing.T) {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
 }
+
+func TestChatRejectsNonPost(t *testing.T) {
+	models := []scheduler.Model{{Name: "deepseek", Priority: 1, MaxRequests: 10}}
+	engine := newTestEngine(models, map[string]string{"deepseek": "http://unused"})
+	h := NewHandler(engine, nil)
+
+	req := httptest.NewRequest("GET", "/v1/chat/completions", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405 for GET, got %d", rec.Code)
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/projectinitiative/conductor/pkg/config"
 	"github.com/projectinitiative/conductor/pkg/k8s"
@@ -89,14 +90,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleModelReady(w http.ResponseWriter, r *http.Request) {
-	model := r.URL.Query().Get("model")
-	if model == "" {
-		var body struct {
-			Model string `json:"model"`
-		}
-		b, _ := io.ReadAll(r.Body)
-		_ = json.Unmarshal(b, &body)
-		model = body.Model
+	model, isWorker := modelFromRequest(r)
+	if isWorker {
+		// A worker becomes Ready before the head; never finalize on it.
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "ignored": "worker"})
+		return
 	}
 	if model == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "model required"})
@@ -110,6 +108,58 @@ func (s *Server) handleModelReady(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "resident": model})
+}
+
+// modelFromRequest derives the model for a model-ready invocation from (in
+// priority order) the ?model= query param, a JSON body {"model": ...}, or a
+// Deployment watch payload (metadata.labels["conductor.io/model"]). It also
+// reports whether the event is for a worker Deployment (name/app ending in
+// "-worker"), which must be ignored.
+func modelFromRequest(r *http.Request) (model string, isWorker bool) {
+	if model = r.URL.Query().Get("model"); model != "" {
+		return model, false
+	}
+	b, _ := io.ReadAll(r.Body)
+	if len(b) == 0 {
+		return "", false
+	}
+	// Simple {"model": ...} body.
+	if model = fieldString(b, "model"); model != "" {
+		return model, false
+	}
+	// Deployment watch payload.
+	_, model, isWorker = deploymentFromBody(b)
+	return model, isWorker
+}
+
+// deploymentFromBody extracts a Deployment's name and model label from its JSON
+// watch payload, unwrapping a Fission "object" envelope if present.
+func deploymentFromBody(b []byte) (name, model string, isWorker bool) {
+	var raw map[string]any
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return "", "", false
+	}
+	obj := raw
+	if inner, ok := raw["object"].(map[string]any); ok {
+		obj = inner
+	}
+	md, _ := obj["metadata"].(map[string]any)
+	name, _ = md["name"].(string)
+	labels, _ := md["labels"].(map[string]any)
+	model, _ = labels["conductor.io/model"].(string)
+	app, _ := labels["app"].(string)
+	isWorker = strings.HasSuffix(name, "-worker") || strings.HasSuffix(app, "-worker")
+	return name, model, isWorker
+}
+
+// fieldString reads a top-level string field from JSON.
+func fieldString(b []byte, key string) string {
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		return ""
+	}
+	v, _ := m[key].(string)
+	return v
 }
 
 // Run starts a blocking HTTP function server on FISSION_FUNCTION_PORT (default

@@ -58,7 +58,9 @@ spec:
     name: conductor-status
     type: function
 ---
-# Fire when a model *-head Deployment becomes Ready, to finalize a swap.
+# Fire when a model *-head Deployment becomes Ready, to finalize a swap. The
+# model head Deployments must carry conductor.io/role=head and
+# conductor.io/model labels; the handler also ignores worker Deployments.
 apiVersion: fission.io/v1
 kind: KubernetesWatchTrigger
 metadata:
@@ -67,7 +69,7 @@ metadata:
 spec:
   namespace: llm-test
   type: deployment
-  labelSelector: conductor.io/model
+  labelSelector: conductor.io/role=head, conductor.io/model
   functionref:
     name: conductor-model-ready
     type: function

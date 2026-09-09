@@ -44,6 +44,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleModels(w, r)
 		return
 	case "/v1/chat/completions", "/v1/completions", "/v2/chat/completions":
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, errBody("method_not_allowed", "POST required"))
+			return
+		}
 		h.handleChat(w, r)
 		return
 	default:
@@ -53,11 +57,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-}
-
-// StatusResponse is the shape returned by GET /status.
-type StatusResponse struct {
-	scheduler.Status
 }
 
 func (h *Handler) handleStatus(w http.ResponseWriter, r *http.Request) {
