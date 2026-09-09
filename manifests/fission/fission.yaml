@@ -1,6 +1,7 @@
-# Fission container-executor environment that runs the Conductor multi-headed
-# binary in "function" mode. The same image builds both the scheduler and the
-# Fission functions. No source archive is used: the function IS the container.
+# Fission container-executor environment for Conductor's surface functions.
+# The Conductor image runs its multi-headed binary in "function" mode; the
+# handler is path-dispatched (/status and /model-ready). One environment serves
+# both function CRs. The conductor ServiceAccount provides in-cluster k8s action.
 apiVersion: fission.io/v1
 kind: Environment
 metadata:
@@ -11,13 +12,12 @@ spec:
   runtime:
     image: ghcr.io/projectinitiative/conductor:0.1.0
     container:
-      # Conductor runs its HTTP function server on FISSION_FUNCTION_PORT (8888).
       command:
         - /usr/local/bin/conductor
         - function
+    podSpec:
+      serviceAccountName: conductor
   defaultPoolSize: 1
-  # In-cluster k8s action is expected to be provided by the cluster (see DESIGN.md).
-  # The conductor ServiceAccount grants the scheduler/functions the needed RBAC.
   allowedFunctionsPerPod: 1
 ---
 apiVersion: fission.io/v1
