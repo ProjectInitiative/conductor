@@ -13,7 +13,7 @@ spec:
     image: ghcr.io/projectinitiative/conductor:0.1.0
     container:
       command:
-        - /usr/local/bin/conductor
+        - /bin/conductor
         - function
     podSpec:
       serviceAccountName: conductor

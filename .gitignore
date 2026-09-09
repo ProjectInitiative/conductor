@@ -37,5 +37,6 @@ result-*
 # Go
 scheduler/bin/
 
-# Vendored submodules / repos
-vendor/
+# Vendored submodules / repos (root only; scheduler/vendor is committed for
+# hermetic offline builds)
+/vendor/

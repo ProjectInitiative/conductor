@@ -23,7 +23,7 @@ spec:
           image: ghcr.io/projectinitiative/conductor:0.1.0
           imagePullPolicy: IfNotPresent
           command:
-            - /usr/local/bin/conductor
+            - /bin/conductor
             - server
           ports:
             - name: http

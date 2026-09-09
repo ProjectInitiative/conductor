@@ -157,7 +157,7 @@
                 ''
                   cd $src
                   nixfmt --check *.nix
-                  [ -z "$(gofmt -l scheduler/)" ] || { echo "gofmt diff in scheduler/"; exit 1; }
+                  [ -z "$(gofmt -l $(find scheduler -name '*.go' -not -path '*/vendor/*'))" ] || { echo "gofmt diff in scheduler/"; exit 1; }
                   RUFF_CACHE_DIR="$TMPDIR" ruff check generator/ 2>/dev/null || true
                   touch $out
                 '';

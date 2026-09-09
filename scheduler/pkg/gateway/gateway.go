@@ -7,20 +7,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
-	"log"
 	"net/http"
-	"time"
 
 	"github.com/projectinitiative/conductor/pkg/scheduler"
 )
-
-// Config wires the gateway to its dependencies.
-type Config struct {
-	ListenAddr string
-	Models     []scheduler.Model
-	Backends   map[string]string // model -> resident backend base URL
-	CallerID   func(r *http.Request) string
-}
 
 // Handler is the HTTP data plane. It applies the scheduler policy per request
 // and proxies admitted OpenAI-compatible requests to the owning backend.
@@ -205,23 +195,4 @@ func isHopHeader(k string) bool {
 		return true
 	}
 	return false
-}
-
-// Run builds a gateway from Config and serves until signal.
-func Run(cfg Config) {
-	if cfg.ListenAddr == "" {
-		cfg.ListenAddr = ":8000"
-	}
-	engine := scheduler.NewEngine(cfg.Models, cfg.Backends)
-	handler := NewHandler(engine, cfg.CallerID)
-	log.Printf("conductor gateway listening on %s", cfg.ListenAddr)
-	srv := &http.Server{
-		Addr:         cfg.ListenAddr,
-		Handler:      handler,
-		ReadTimeout:  120 * time.Second,
-		WriteTimeout: 0,
-	}
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatal(err)
-	}
 }

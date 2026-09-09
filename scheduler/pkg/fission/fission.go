@@ -11,8 +11,52 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/projectinitiative/conductor/pkg/config"
+	"github.com/projectinitiative/conductor/pkg/k8s"
 	"github.com/projectinitiative/conductor/pkg/scheduler"
 )
+
+// Run is the Fission function entry point: it builds a Server (engine from
+// model profiles + a best-effort state setter) and serves. The op is carried by
+// the request path (/status, /model-ready).
+func Run(args []string) {
+	engine := engineOrEmpty()
+	state := &stateSetter{client: clientOrNoop()}
+	srv := NewServer(engine, state)
+	srv.Run(args)
+}
+
+func engineOrEmpty() *scheduler.Engine {
+	res, err := config.LoadFile(os.Getenv("CONDUCTOR_PROFILES"))
+	if err != nil {
+		log.Printf("no profiles (%v); serving empty engine", err)
+		res = &config.Result{}
+	}
+	return scheduler.NewEngine(res.Models, res.Backends)
+}
+
+func clientOrNoop() k8s.Client {
+	ns := os.Getenv("CONDUCTOR_NAMESPACE")
+	if ns == "" {
+		ns = "llm-test"
+	}
+	if c, err := k8s.NewInCluster(ns); err == nil {
+		return c
+	}
+	return k8s.NoopClient{}
+}
+
+// stateSetter persists a finalized residency decision to the state ConfigMap.
+type stateSetter struct {
+	client k8s.Client
+}
+
+func (s *stateSetter) SetState(model string) error {
+	if s.client == nil {
+		return nil
+	}
+	return s.client.SetConfigMap("conductor-state", map[string]string{"resident": model})
+}
 
 // StateSetter persists a finalized residency decision (e.g. writes the model
 // state ConfigMap and updates LiteLLM config). Hidden behind an interface so

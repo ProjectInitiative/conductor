@@ -21,8 +21,8 @@ modelProfiles:
   GLM-5.3-Flash-EXL3:
     priority: 2
     servedModelName: GLM-5.3-Flash-EXL3
-    head: {deployment: glm53-exl3-head, hostIP: 172.16.4.55, port: 8888}
-    worker: {deployment: glm53-exl3-worker, hostIP: 172.16.4.56}
+    head: {deployment: glm-parity-head, hostIP: 172.16.4.55, port: 8888}
+    worker: {deployment: glm-parity-worker, hostIP: 172.16.4.56}
     health: {path: /health, timeout: 3600s}
     quantum: {max_requests: 16, max_seconds: 600}
     min_dwell: 900s
@@ -30,8 +30,8 @@ modelProfiles:
   qwen3.8-flash-next:
     priority: 3
     servedModelName: qwen3.8-flash-next
-    head: {deployment: qwen38-flash-head, hostIP: 172.16.4.55, port: 8888}
-    worker: {deployment: qwen38-flash-worker, hostIP: 172.16.4.56}
+    head: {deployment: qwen-parity-head, hostIP: 172.16.4.55, port: 8888}
+    worker: {deployment: qwen-parity-worker, hostIP: 172.16.4.56}
     health: {path: /health, timeout: 3600s}
     quantum: {max_requests: 16, max_seconds: 600}
     min_dwell: 900s
