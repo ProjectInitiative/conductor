@@ -1,19 +1,15 @@
 #!/usr/bin/env python3
-"""Conductor — Argo CD Application manifest generator (cdk8s).
+"""Conductor — cdk8s generator.
 
-Reads a declarative catalog (apps.yaml) and cluster deployment config
-(clusters/*.yaml) and emits Argo CD `Application` CRDs for the LLM
-model-serving stack (router, scheduler, fission, models, rbac, services).
+Renders the *deployable* Conductor stack (Deployments, Services, ConfigMaps,
+Fission CRs, RBAC, per-model head/worker templates, Tailscale Service) from a
+single declarative source of truth. This is what Argo CD runs via the
+`cdk8s-v1.0` CMP plugin for ONE homelab Application: the generator here decides
+how every dependency is assembled, and Argo CD just applies the result.
 
-Pieces are emitted with `ApiObject` (raw YAML) so the generator runs without
-requiring pre-generated cdk8s CRD Python stubs; `import-crds` is only needed if
-we later want typed constructors.
-
-The generator is also importable: `build_application_spec(...)` and
-`build_sources(...)` are pure helpers the tests exercise without cdk8s.
+No operator, no Helm chart, no hand-written Kustomize for the deployables.
 """
 
-import copy
 import os
 import sys
 
@@ -31,205 +27,341 @@ def load_yaml(path):
 
 GENERATOR_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(GENERATOR_DIR)
-DEFAULT_REPO_URL = "https://github.com/projectinitiative/conductor.git"
-DEFAULT_REVISION = "HEAD"
-PROFILES_CM = "conductor-model-profiles"
 
 
-# ---------------------------------------------------------------------------
-# Pure spec builders (unit-testable, no cdk8s)
-# ---------------------------------------------------------------------------
-def _deep_merge(a, b):
-    """Recursively merge b into a (returns a new dict). b wins on scalars."""
-    out = copy.deepcopy(a or {})
-    for k, v in (b or {}).items():
-        if isinstance(v, dict) and isinstance(out.get(k), dict):
-            out[k] = _deep_merge(out[k], v)
-        else:
-            out[k] = copy.deepcopy(v)
-    return out
+class ConductorStack(Chart):
+    """Renders the whole self-contained Conductor app in one namespace."""
 
+    def __init__(self, scope: Construct, cfg: dict, deploy: dict):
+        namespace = deploy.get("namespace", "llm-test")
+        image = deploy.get("image", "ghcr.io/projectinitiative/conductor:0.1.0")
+        profiles = cfg.get("modelProfiles", {})
 
-def _merge_kustomize(base, extra):
-    """Merge kustomize settings, extending images/patches lists."""
-    merged = copy.deepcopy(base or {})
-    for k, v in (extra or {}).items():
-        if k in ("images", "patches") and isinstance(v, list):
-            merged.setdefault(k, [])
-            merged[k] = merged[k] + copy.deepcopy(v)
-        else:
-            merged[k] = copy.deepcopy(v)
-    return merged
+        super().__init__(scope, namespace, disable_resource_name_hashes=True)
+        print(f"Rendering Conductor stack in namespace {namespace}", file=sys.stderr)
 
+        self._namespace(namespace)
+        self._rbac(namespace)
+        self._scheduler(namespace, image)
+        self._router(namespace)
+        self._fission(namespace, image)
+        self._models(namespace, profiles)
+        self._services(namespace)
+        self._state_configmaps(namespace, profiles)
 
-def _image_overrides(deploy):
-    """Turn deploy.image {name,newTag} (and optional newName) into kustomize images."""
-    img = deploy.get("image")
-    if not img:
-        return {}
-    entry = {"name": img["name"], "newTag": img.get("newTag", img.get("tag", "latest"))}
-    if img.get("newName"):
-        entry["newName"] = img["newName"]
-    return {"images": [entry]}
-
-
-def _profiles_patch(model_profiles, namespace):
-    """Build a kustomize patch that fills the conductor-model-profiles ConfigMap."""
-    if not model_profiles:
-        return None
-    data_lines = []
-    for name, profile in model_profiles.items():
-        # Each profile is serialized as a YAML doc inside the ConfigMap data.
-        data_lines.append(f"  {name}: |")
-        body = yaml.safe_dump(profile, default_flow_style=False, sort_keys=True)
-        for line in body.rstrip("\n").split("\n"):
-            data_lines.append(f"    {line}")
-    data_block = "\n".join(data_lines)
-    patch_yaml = (
-        "apiVersion: v1\n"
-        "kind: ConfigMap\n"
-        "metadata:\n"
-        f"  name: {PROFILES_CM}\n"
-        f"  namespace: {namespace}\n"
-        "data:\n"
-        f"{data_block}\n"
-    )
-    return {
-        "patch": patch_yaml,
-        "target": {"kind": "ConfigMap", "name": PROFILES_CM},
-    }
-
-
-def build_sources(app_def, deploy, model_profiles, namespace, defaults):
-    """Return the list of Argo CD sources for one application."""
-    repo_url = deploy.get("repoURL", app_def.get("repoURL", defaults.get("repoURL", DEFAULT_REPO_URL)))
-    revision = deploy.get("targetRevision", app_def.get("targetRevision", defaults.get("targetRevision", DEFAULT_REVISION)))
-    sources = []
-
-    if "chart" in app_def:
-        # Helm chart source.
-        src = {
-            "repoURL": app_def.get("chartRepoURL", app_def.get("repoURL", repo_url)),
-            "chart": app_def["chart"],
-            "targetRevision": app_def.get("targetRevision", revision),
-        }
-        helm = {}
-        if deploy.get("helm_values"):
-            helm = {"values": deploy["helm_values"]}
-        unless_empty = deploy.get("helm", {}) or app_def.get("helm", {})
-        if unless_empty:
-            helm = _deep_merge(unless_empty, helm)
-        if helm:
-            src["helm"] = helm
-        sources.append(src)
-        return sources
-
-    # git-path source (Kustomize base in this repo).
-    path = deploy.get("path", app_def.get("path"))
-    if not path:
-        return sources
-    src = {"repoURL": repo_url, "targetRevision": revision, "path": path}
-
-    kustomize = _merge_kustomize(
-        app_def.get("kustomize", {}),
-        deploy.get("kustomize", {}),
-    )
-    kustomize = _merge_kustomize(kustomize, _image_overrides(deploy))
-
-    # For the models app, carry the per-model scheduler profiles.
-    if path.startswith("manifests/models"):
-        patch = _profiles_patch(model_profiles, namespace)
-        if patch:
-            kustomize = _merge_kustomize(kustomize, {"patches": [patch]})
-
-    if kustomize:
-        src["kustomize"] = kustomize
-    if deploy.get("helm_values"):
-        src["helm"] = {"values": deploy["helm_values"]}
-    sources.append(src)
-    return sources
-
-
-def build_application(app_name, app_def, deploy, model_profiles, cluster_config, defaults):
-    """Return a complete Argo CD Application spec dict for (app, cluster)."""
-    server_url = cluster_config["server"]
-    namespace = deploy.get("namespace", "llm-test")
-    project = deploy.get("project", cluster_config.get("project", "conductor"))
-    sync_policy_def = app_def.get("syncPolicy", {}) or {}
-
-    sources = build_sources(app_def, deploy, model_profiles, namespace, defaults)
-
-    sync_options = ["CreateNamespace=true", "ServerSideApply=true"]
-    additional = list(deploy.get("syncOptions") or []) + list(sync_policy_def.get("syncOptions") or [])
-    for opt in additional:
-        if opt not in sync_options:
-            sync_options.append(opt)
-
-    sync_policy = {"syncOptions": sync_options}
-    automated = sync_policy_def.get("automated", {"prune": True, "selfHeal": True})
-    if automated:
-        sync_policy["automated"] = automated
-
-    return {
-        "project": project,
-        "destination": {"server": server_url, "namespace": namespace},
-        "sources": sources,
-        "syncPolicy": sync_policy,
-    }
-
-
-# ---------------------------------------------------------------------------
-# cdk8s chart
-# ---------------------------------------------------------------------------
-class ConductorChart(Chart):
-    """One Chart per cluster. Emits Argo CD Application CRDs for that cluster."""
-
-    def __init__(self, scope: Construct, cluster_file: str, catalog: dict,
-                 model_profiles: dict, defaults: dict):
-        cluster_config = load_yaml(cluster_file)
-        if not cluster_config:
-            return
-
-        cluster_name = cluster_config["name"]
-        argo_namespace = cluster_config.get("argoNamespace", "argocd")
-
-        super().__init__(scope, cluster_name, disable_resource_name_hashes=True)
-        print(f"Processing cluster: {cluster_name}", file=sys.stderr)
-
-        for app in cluster_config.get("apps", []):
-            app_name = app["name"]
-            app_def = catalog.get(app_name)
-            if not app_def:
-                print(f"  [WARN] '{app_name}' not in catalog. Skipping.", file=sys.stderr)
+    # ---- emit helper ----------------------------------------------------
+    def _emit(self, name, api_version, kind, manifest):
+        meta = manifest.get("metadata", {"name": name})
+        obj = ApiObject(self, name, api_version=api_version, kind=kind, metadata=meta)
+        for key, val in manifest.items():
+            if key in ("apiVersion", "kind", "metadata"):
                 continue
+            obj.add_json_patch(JsonPatch.add(f"/{key}", val))
+        return obj
 
-            spec = build_application(app_name, app_def, app, model_profiles,
-                                     cluster_config, defaults)
+    def _namespace(self, ns):
+        self._emit(ns, "v1", "Namespace", {
+            "metadata": {"name": ns, "labels": {"purpose": "conductor", "vault-auth": "enabled"}},
+        })
 
-            obj = ApiObject(
-                self,
-                f"{cluster_name}-{app_name}",
-                api_version="argoproj.io/v1alpha1",
-                kind="Application",
-                metadata={
-                    "name": app_name,
-                    "namespace": argo_namespace,
-                    "labels": {
-                        "app.kubernetes.io/part-of": "conductor",
-                        "conductor.io/cluster": cluster_name,
+    # ---- RBAC -----------------------------------------------------------
+    def _rbac(self, ns):
+        self._emit("conductor-sa", "v1", "ServiceAccount",
+                   {"metadata": {"name": "conductor", "namespace": ns}})
+        self._emit("conductor-role", "rbac.authorization.k8s.io/v1", "Role", {
+            "metadata": {"name": "conductor", "namespace": ns},
+            "rules": [
+                {"apiGroups": ["apps"], "resources": ["deployments"],
+                 "verbs": ["get", "list", "watch", "patch", "update"]},
+                {"apiGroups": ["apps"], "resources": ["deployments/scale"],
+                 "verbs": ["get", "patch", "update"]},
+                {"apiGroups": [""], "resources": ["pods"],
+                 "verbs": ["get", "list", "watch"]},
+                {"apiGroups": [""], "resources": ["configmaps"],
+                 "verbs": ["get", "list", "watch", "create", "update", "patch"]},
+                {"apiGroups": [""], "resources": ["services"],
+                 "verbs": ["get", "list", "watch"]},
+                {"apiGroups": ["coordination.k8s.io"], "resources": ["leases"],
+                 "verbs": ["get", "list", "watch", "create", "update", "patch"]},
+            ],
+        })
+        self._emit("conductor-rolebinding", "rbac.authorization.k8s.io/v1", "RoleBinding", {
+            "metadata": {"name": "conductor", "namespace": ns},
+            "subjects": [{"kind": "ServiceAccount", "name": "conductor", "namespace": ns}],
+            "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": "conductor"},
+        })
+
+    # ---- scheduler ------------------------------------------------------
+    def _scheduler(self, ns, image):
+        self._emit("conductor-deploy", "apps/v1", "Deployment", {
+            "metadata": {"name": "conductor", "namespace": ns},
+            "spec": {
+                "replicas": 1,
+                "strategy": {"type": "Recreate"},
+                "selector": {"matchLabels": {"app": "conductor"}},
+                "template": {
+                    "metadata": {"labels": {"app": "conductor"}},
+                    "spec": {
+                        "serviceAccountName": "conductor",
+                        "containers": [{
+                            "name": "conductor",
+                            "image": image,
+                            "imagePullPolicy": "IfNotPresent",
+                            "command": ["/bin/conductor", "server"],
+                            "ports": [{"name": "http", "containerPort": 8000}],
+                            "readinessProbe": {"httpGet": {"path": "/health", "port": 8000},
+                                               "initialDelaySeconds": 5, "periodSeconds": 10},
+                            "livenessProbe": {"httpGet": {"path": "/health", "port": 8000},
+                                              "initialDelaySeconds": 15, "periodSeconds": 20},
+                            "resources": {"requests": {"cpu": "250m", "memory": "256Mi"},
+                                          "limits": {"cpu": "1", "memory": "512Mi"}},
+                            "volumeMounts": [
+                                {"name": "state", "mountPath": "/etc/conductor/state", "readOnly": True},
+                                {"name": "profiles", "mountPath": "/etc/conductor/profiles", "readOnly": True},
+                            ],
+                        }],
+                        "volumes": [
+                            {"name": "state", "configMap": {"name": "conductor-state"}},
+                            {"name": "profiles", "configMap": {"name": "conductor-model-profiles"}},
+                        ],
                     },
                 },
-            )
-            obj.add_json_patch(JsonPatch.add("/spec", spec))
+            },
+        })
+        self._emit("conductor-svc", "v1", "Service", {
+            "metadata": {"name": "conductor", "namespace": ns},
+            "spec": {
+                "selector": {"app": "conductor"},
+                "ports": [{"name": "http", "port": 8000, "targetPort": 8000}],
+            },
+        })
+
+    # ---- router (LiteLLM) ------------------------------------------------
+    def _router(self, ns):
+        self._emit("litellm-config", "v1", "ConfigMap", {
+            "metadata": {"name": "litellm-config", "namespace": ns},
+            "data": {"config.yaml": self._litellm_config()},
+        })
+        self._emit("litellm-deploy", "apps/v1", "Deployment", {
+            "metadata": {"name": "litellm", "namespace": ns},
+            "spec": {
+                "replicas": 1,
+                "selector": {"matchLabels": {"app": "litellm"}},
+                "template": {
+                    "metadata": {"labels": {"app": "litellm"}},
+                    "spec": {
+                        "containers": [{
+                            "name": "litellm",
+                            "image": "ghcr.io/berriai/litellm:main-latest",
+                            "imagePullPolicy": "IfNotPresent",
+                            "ports": [{"name": "http", "containerPort": 8000}],
+                            "volumeMounts": [{"name": "config",
+                                              "mountPath": "/app/config.yaml",
+                                              "subPath": "config.yaml"}],
+                        }],
+                        "volumes": [{"name": "config",
+                                     "configMap": {"name": "litellm-config"}}],
+                    },
+                },
+            },
+        })
+        self._emit("litellm-svc", "v1", "Service", {
+            "metadata": {"name": "litellm", "namespace": ns},
+            "spec": {
+                "selector": {"app": "litellm"},
+                "ports": [{"name": "http", "port": 8000, "targetPort": 8000}],
+            },
+        })
+
+    def _litellm_config(self):
+        entries = "\n".join(
+            f"      - model_name: {name}\n"
+            f"        litellm_params:\n"
+            f"          model: hosted_vllm/{name}\n"
+            f"          api_base: http://conductor:8000/v1\n"
+            f"          api_key: os.environ/VLLM_API_KEY\n"
+            for name in ["deepseek-v4-flash-vision-exp", "GLM-5.3-Flash-EXL3", "qwen3.8-flash-next"]
+        )
+        return ("model_list:\n" + entries +
+                "general_settings:\n  master_key: os.environ/LITELLM_MASTER_KEY\n")
+
+    # ---- Fission ---------------------------------------------------------
+    def _fission(self, ns, image):
+        self._emit("fission-env-conductor", "fission.io/v1", "Environment", {
+            "metadata": {"name": "conductor", "namespace": ns},
+            "spec": {
+                "version": 3,
+                "runtime": {"image": image,
+                            "container": {"command": ["/bin/conductor", "function"]},
+                            "podSpec": {"serviceAccountName": "conductor"}},
+                "defaultPoolSize": 1,
+                "allowedFunctionsPerPod": 1,
+            },
+        })
+        for fn in ["conductor-status", "conductor-model-ready"]:
+            self._emit("fission-fn-" + fn, "fission.io/v1", "Function", {
+                "metadata": {"name": fn, "namespace": ns},
+                "spec": {
+                    "environment": "conductor",
+                    "invokeStrategy": {"strategy": "newdeploy",
+                                       "executionStrategy": {"minScale": 1, "maxScale": 1}},
+                },
+            })
+        self._emit("fission-http-status", "fission.io/v1", "HTTPTrigger", {
+            "metadata": {"name": "conductor-status", "namespace": ns},
+            "spec": {
+                "relativeURL": "/conductor/status", "method": "GET",
+                "functionref": {"name": "conductor-status", "type": "function"},
+            },
+        })
+        self._emit("fission-watch-ready", "fission.io/v1", "KubernetesWatchTrigger", {
+            "metadata": {"name": "conductor-model-ready", "namespace": ns},
+            "spec": {
+                "namespace": ns, "type": "deployment",
+                "labelSelector": "conductor.io/role=head",
+                "functionref": {"name": "conductor-model-ready", "type": "function"},
+            },
+        })
+
+    # ---- models ----------------------------------------------------------
+    def _models(self, ns, profiles):
+        self._emit("model-cache", "v1", "PersistentVolumeClaim", {
+            "metadata": {"name": "model-cache", "namespace": ns},
+            "spec": {
+                "accessModes": ["ReadWriteMany"],
+                "storageClassName": "juicefs-sc",
+                "resources": {"requests": {"storage": "1Ti"}},
+            },
+        })
+        for name, p in profiles.items():
+            self._model_pair(ns, name, p)
+
+    def _model_pair(self, ns, name, p):
+        head = p.get("head", {})
+        worker = p.get("worker", {})
+        port = head.get("port", 8000)
+        image = p.get("image", "vllm/vllm-openai:latest")
+        head_name = head.get("deployment", name.lower() + "-head")
+        worker_name = worker.get("deployment", name.lower() + "-worker")
+
+        self._emit("head-" + name.lower(), "apps/v1", "Deployment", {
+            "metadata": {"name": head_name, "namespace": ns},
+            "spec": self._model_deploy_spec(
+                name, image, port, head_name, role="head",
+                labels={"app": name.lower(), "conductor.io/model": name, "conductor.io/role": "head"},
+            ),
+        })
+        self._emit("worker-" + name.lower(), "apps/v1", "Deployment", {
+            "metadata": {"name": worker_name, "namespace": ns},
+            "spec": self._model_deploy_spec(
+                name, image, port, worker_name, role="worker",
+                labels={"app": name.lower(), "conductor.io/model": name, "conductor.io/role": "worker"},
+            ),
+        })
+        self._emit("svc-" + name.lower() + "-head", "v1", "Service", {
+            "metadata": {"name": name.lower() + "-head", "namespace": ns},
+            "spec": {
+                "selector": {"conductor.io/role": "head", "conductor.io/model": name},
+                "ports": [{"name": "http", "port": port, "targetPort": port}],
+            },
+        })
+
+    def _model_deploy_spec(self, name, image, port, deploy, role, labels):
+        node = "chronometer" if role == "head" else "sextant"
+        cmd = self._head_cmd(name, port) if role == "head" else self._worker_cmd(name, port)
+        return {
+            "replicas": 0,
+            "strategy": {"type": "Recreate"},
+            "selector": {"matchLabels": labels},
+            "template": {
+                "metadata": {"labels": labels},
+                "spec": {
+                    "hostNetwork": True,
+                    "hostIPC": True,
+                    "dnsPolicy": "ClusterFirstWithHostNet",
+                    "nodeSelector": {"kubernetes.io/hostname": node},
+                    "containers": [{
+                        "name": "vllm",
+                        "image": image,
+                        "imagePullPolicy": "IfNotPresent",
+                        "command": ["/bin/bash", "-lc"],
+                        "args": [cmd],
+                        "ports": [{"name": "http", "containerPort": port}],
+                        "volumeMounts": [{"name": "models", "mountPath": "/models"}],
+                    }],
+                    "volumes": [{"name": "models",
+                                 "persistentVolumeClaim": {"claimName": "model-cache"}}],
+                },
+            },
+        }
+
+    def _head_cmd(self, name, port):
+        # Structural rank-0 head. Model-specific patches/env are added per model
+        # (see DESIGN.md); this is the multi-node vLLM skeleton.
+        return ("set -euxo pipefail\n"
+                f"exec /usr/bin/vllm serve {name} --served-model-name {name} "
+                "--tensor-parallel-size 2 --nnodes 2 --node-rank 0 "
+                "--distributed-executor-backend mp --host 0.0.0.0 "
+                f"--port {port}\n")
+
+    def _worker_cmd(self, name, port):
+        # Structural rank-1 headless worker.
+        return ("set -euxo pipefail\n"
+                f"exec /usr/bin/vllm serve {name} --served-model-name {name} "
+                "--tensor-parallel-size 2 --nnodes 2 --node-rank 1 --headless "
+                "--distributed-executor-backend mp --host 0.0.0.0 "
+                f"--port {port}\n")
+
+    # ---- services ---------------------------------------------------------
+    def _services(self, ns):
+        self._emit("ai-svc", "v1", "Service", {
+            "metadata": {"name": "ai", "namespace": ns,
+                         "annotations": {"tailscale.com/hostname": "ai",
+                                         "tailscale.com/proxy-group": "mc-ingress-proxy"}},
+            "spec": {
+                "type": "LoadBalancer",
+                "loadBalancerClass": "tailscale",
+                "selector": {"app": "litellm"},
+                "ports": [{"name": "http", "protocol": "TCP", "port": 80, "targetPort": 8000}],
+            },
+        })
+
+    # ---- state / model-profiles ------------------------------------------
+    def _state_configmaps(self, ns, profiles):
+        self._emit("conductor-state", "v1", "ConfigMap", {
+            "metadata": {"name": "conductor-state", "namespace": ns},
+            "data": {"state.yaml": "resident: \"\"\ndesired: \"\"\nstatus: idle\nstarted_at: \"\"\n"},
+        })
+        self._emit("conductor-model-profiles", "v1", "ConfigMap", {
+            "metadata": {"name": "conductor-model-profiles", "namespace": ns},
+            "data": {"models.yaml": self._profiles_yaml(profiles)},
+        })
+
+    def _profiles_yaml(self, profiles):
+        out = ["models:"]
+        for name, p in profiles.items():
+            head = p.get("head", {})
+            worker = p.get("worker", {})
+            health = p.get("health", {})
+            quantum = p.get("quantum", {})
+            out.append(f"  - name: {name}")
+            out.append(f"    priority: {p.get('priority', 9)}")
+            out.append(f"    image: {p.get('image', '')}")
+            out.append(f"    head: {{deployment: {head.get('deployment', '')}, "
+                       f"hostIP: {head.get('hostIP', '')}, port: {head.get('port', 8000)}}}")
+            out.append(f"    worker: {{deployment: {worker.get('deployment', '')}, "
+                       f"hostIP: {worker.get('hostIP', '')}}}")
+            out.append(f"    health: {{path: {health.get('path', '/health')}, "
+                       f"timeout: {health.get('timeout', '3600s')}}}")
+            out.append(f"    quantum: {{max_requests: {quantum.get('max_requests', 16)}, "
+                       f"max_seconds: {quantum.get('max_seconds', 600)}}}")
+            out.append(f"    min_dwell: {p.get('min_dwell', '900s')}")
+            out.append(f"    cooldown: {p.get('cooldown', '300s')}")
+        return "\n".join(out) + "\n"
 
 
 def main():
-    catalog_doc = load_yaml(os.path.join(ROOT_DIR, "apps.yaml")) or {}
-    catalog = catalog_doc.get("catalog", {})
-    defaults = catalog_doc.get("defaults", {})
-    model_profiles = catalog_doc.get("modelProfiles", {})
-
-    app = App(outdir=os.environ.get("MANIFEST_OUTPUT_DIR", ".direnv/manifests"))
+    cfg = load_yaml(os.path.join(ROOT_DIR, "apps.yaml")) or {}
     cluster_dir = os.path.join(ROOT_DIR, "clusters")
     cluster_files = sorted(
         os.path.join(cluster_dir, f)
@@ -240,11 +372,13 @@ def main():
         print("Error: no clusters/*.yaml found", file=sys.stderr)
         sys.exit(1)
 
+    app = App(outdir=os.environ.get("MANIFEST_OUTPUT_DIR", ".direnv/manifests"))
     for cluster_file in cluster_files:
-        ConductorChart(app, cluster_file, catalog, model_profiles, defaults)
-
+        cluster = load_yaml(cluster_file) or {}
+        for deploy in cluster.get("apps", []):
+            ConductorStack(app, cfg, deploy)
     app.synth()
-    print("Manifests synthesized.", file=sys.stderr)
+    print("Conductor deployable rendered.", file=sys.stderr)
 
 
 if __name__ == "__main__":

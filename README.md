@@ -9,12 +9,44 @@ models still get served.
 
 ## Components
 
-- **`generator/`** — cdk8s generator that renders Argo CD `Application` CRDs from a
-  declarative catalog (`apps.yaml` + `clusters/*.yaml`).
+- **`generator/`** — a **cdk8s** app. The single place that decides how the whole
+  stack is built: it renders the *deployable* Kubernetes objects (Deployments,
+  Services, ConfigMaps, Fission CRs, RBAC, per-model head/worker templates,
+  Tailscale Service) from `apps.yaml` + `clusters/*.yaml`. No operator, no Helm
+  chart, no hand-written Kustomize for the deployables.
 - **`scheduler/`** — Go multi-headed binary: the scheduler + traffic-light gateway
   (`conductor server`) and the Fission functions (`conductor function <op>`).
-- **`manifests/`** — Kustomize bases for the router, scheduler deployment, fission
-  resources, per-model templates, RBAC and services.
+
+## Deploying (homelab is purely a deployment mechanism)
+
+Homelab adds **one** plain Argo CD `Application` whose `source` is this repo's
+`generator`, run through the **`cdk8s-v1.0` CMP plugin** (already installed for
+homelab-root). Argo CD "calls" the generator, which emits the self-contained
+Conductor app, and applies it:
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: conductor
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/projectinitiative/conductor.git
+    targetRevision: HEAD
+    path: generator
+    plugin:
+      name: cdk8s-v1.0
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: llm-test
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+```
+
+Conductor owns all "how to build" logic (image built by its CI + the cdk8s
+rendering). Homelab only registers the app.
 
 See `DESIGN.md` for the full architecture and contracts.
 

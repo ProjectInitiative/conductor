@@ -2,19 +2,11 @@ name: mc
 server: https://172.16.1.50:6443
 project: conductor
 argoNamespace: argocd-mc
+# ONE self-contained app. The generator renders the whole stack into this
+# namespace; Argo CD applies it via the cdk8s-v1.0 CMP plugin.
 apps:
-  - name: rbac
+  - name: conductor
     namespace: llm-test
-  - name: scheduler
-    namespace: llm-test
-    image:
-      name: ghcr.io/projectinitiative/conductor
-      newTag: 0.1.0
-  - name: fission
-    namespace: llm-test
-  - name: models
-    namespace: llm-test
-  - name: services
-    namespace: llm-test
-  - name: router
-    namespace: llm-test
+    repoURL: https://github.com/projectinitiative/conductor.git
+    targetRevision: HEAD
+    image: ghcr.io/projectinitiative/conductor:0.1.0

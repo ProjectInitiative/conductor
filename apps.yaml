@@ -1,17 +1,17 @@
-# Conductor app catalog. Declares deployable pieces and the scheduler model
-# profiles. The cdk8s generator (generator/main.py) emits Argo CD Application
-# CRDs from this + clusters/<cluster>.yaml.
+# Conductor app config. Single source of truth for the self-contained app.
+# The cdk8s generator (generator/main.py) renders ALL deployable objects
+# (Deployments, Services, ConfigMaps, Fission CRs, RBAC, per-model templates)
+# from this + clusters/<cluster>.yaml. Argo CD runs it via the cdk8s-v1.0 CMP
+# plugin for ONE homelab Application.
 defaults:
   repoURL: https://github.com/projectinitiative/conductor.git
   targetRevision: HEAD
 
-# Scheduler model profiles. These are injected into the `models` Application
-# as a kustomize patch onto the conductor-model-profiles ConfigMap.
-# See DESIGN.md §2.1.
+# Scheduler model profiles. See DESIGN.md §2.1.
 modelProfiles:
   deepseek-v4-flash-vision-exp:
     priority: 1
-    servedModelName: deepseek-v4-flash-vision-exp
+    image: ghcr.io/anemll/dspark-vllm-gx10:0.1.1
     head: {deployment: deepseek-parity-head, hostIP: 172.16.4.55, port: 8000}
     worker: {deployment: deepseek-parity-worker, hostIP: 172.16.4.56}
     health: {path: /health, timeout: 3600s}
@@ -20,7 +20,7 @@ modelProfiles:
     cooldown: 300s
   GLM-5.3-Flash-EXL3:
     priority: 2
-    servedModelName: GLM-5.3-Flash-EXL3
+    image: ghcr.io/miaai-lab/glm-5.3-flash-2x-dgx-sparks:exl3
     head: {deployment: glm-parity-head, hostIP: 172.16.4.55, port: 8888}
     worker: {deployment: glm-parity-worker, hostIP: 172.16.4.56}
     health: {path: /health, timeout: 3600s}
@@ -29,34 +29,10 @@ modelProfiles:
     cooldown: 300s
   qwen3.8-flash-next:
     priority: 3
-    servedModelName: qwen3.8-flash-next
+    image: vllm/vllm-openai:qwen38-flash-next
     head: {deployment: qwen-parity-head, hostIP: 172.16.4.55, port: 8888}
     worker: {deployment: qwen-parity-worker, hostIP: 172.16.4.56}
     health: {path: /health, timeout: 3600s}
     quantum: {max_requests: 16, max_seconds: 600}
     min_dwell: 900s
     cooldown: 300s
-
-catalog:
-  router:
-    path: manifests/router
-    kustomize: {}
-    syncPolicy:
-      syncOptions: ["CreateNamespace=true", "ServerSideApply=true"]
-  scheduler:
-    path: manifests/scheduler
-    kustomize: {}
-    syncPolicy:
-      syncOptions: ["CreateNamespace=true", "ServerSideApply=true"]
-  fission:
-    path: manifests/fission
-    kustomize: {}
-  models:
-    path: manifests/models
-    kustomize: {}
-  rbac:
-    path: manifests/rbac
-    kustomize: {}
-  services:
-    path: manifests/services
-    kustomize: {}

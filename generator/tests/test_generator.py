@@ -1,5 +1,6 @@
-"""Tests for the Conductor cdk8s generator."""
+"""Tests for the Conductor cdk8s generator (self-contained deployable)."""
 
+import io
 import os
 
 import yaml
@@ -7,103 +8,104 @@ import yaml
 import generator.main as gen
 
 
-CLUSTER = {
-    "name": "mc",
-    "server": "https://172.16.1.50:6443",
-    "project": "conductor",
-    "argoNamespace": "argocd-mc",
-}
-DEFAULTS = {"repoURL": "https://github.com/projectinitiative/conductor.git",
-            "targetRevision": "HEAD"}
-PROFILES = {
-    "deepseek-v4-flash-vision-exp": {
-        "priority": 1,
-        "servedModelName": "deepseek-v4-flash-vision-exp",
-        "head": {"deployment": "deepseek-parity-head", "hostIP": "172.16.4.55", "port": 8000},
-    },
-}
+def yaml_load_all(text):
+    return list(yaml.safe_load_all(io.StringIO(text)))
 
 
-def test_build_sources_git_path():
-    app_def = {"path": "manifests/scheduler"}
-    deploy = {"name": "scheduler", "namespace": "llm-test",
-              "image": {"name": "ghcr.io/projectinitiative/conductor", "newTag": "0.1.0"}}
-    sources = gen.build_sources(app_def, deploy, PROFILES, "llm-test", DEFAULTS)
-    assert len(sources) == 1
-    assert sources[0]["path"] == "manifests/scheduler"
-    assert sources[0]["repoURL"] == DEFAULTS["repoURL"]
-    assert sources[0]["targetRevision"] == "HEAD"
-    # Image override is injected into the source's kustomize images.
-    assert sources[0]["kustomize"]["images"] == [
-        {"name": "ghcr.io/projectinitiative/conductor", "newTag": "0.1.0"}
-    ]
-
-
-def test_build_sources_helm():
-    app_def = {
-        "chart": "litellm",
-        "repoURL": "https://charts.example.com",
-        "helm": {"values": "replicas: 1"},
-    }
-    deploy = {"name": "router", "namespace": "llm-test"}
-    sources = gen.build_sources(app_def, deploy, PROFILES, "llm-test", DEFAULTS)
-    assert len(sources) == 1
-    assert sources[0]["chart"] == "litellm"
-    assert sources[0]["repoURL"] == "https://charts.example.com"
-    assert sources[0]["helm"]["values"] == "replicas: 1"
-
-
-def test_application_spec_shapes():
-    app_def = {"path": "manifests/rbac", "kustomize": {}}
-    deploy = {"name": "rbac", "namespace": "llm-test"}
-    spec = gen.build_application("rbac", app_def, deploy, PROFILES, CLUSTER, DEFAULTS)
-    assert spec["project"] == "conductor"
-    assert spec["destination"] == {"server": CLUSTER["server"], "namespace": "llm-test"}
-    assert spec["sources"][0]["path"] == "manifests/rbac"
-    assert spec["syncPolicy"]["syncOptions"] == ["CreateNamespace=true", "ServerSideApply=true"]
-    assert spec["syncPolicy"]["automated"] == {"prune": True, "selfHeal": True}
-
-
-def test_models_app_carries_profiles_patch():
-    app_def = {"path": "manifests/models", "kustomize": {}}
-    deploy = {"name": "models", "namespace": "llm-test"}
-    spec = gen.build_application("models", app_def, deploy, PROFILES, CLUSTER, DEFAULTS)
-    patches = spec["sources"][0]["kustomize"]["patches"]
-    assert len(patches) == 1
-    patch = patches[0]
-    assert patch["target"] == {"kind": "ConfigMap", "name": "conductor-model-profiles"}
-    assert "kind: ConfigMap" in patch["patch"] or "apiVersion: v1" in patch["patch"]
-
-
-def test_main_generates_applications(tmp_path, monkeypatch):
+def run_generator(tmp_path):
     outdir = str(tmp_path / "out")
-    monkeypatch.setenv("MANIFEST_OUTPUT_DIR", outdir)
+    os.environ["MANIFEST_OUTPUT_DIR"] = outdir
     gen.main()
-
-    # Collect every Application resource emitted.
-    apps = []
+    objs = []
     for name in os.listdir(outdir):
         if not name.endswith(".yaml"):
             continue
         with open(os.path.join(outdir, name)) as f:
             for doc in yaml_load_all(f.read()):
-                if doc and doc.get("kind") == "Application":
-                    apps.append(doc)
-
-    names = sorted(a["metadata"]["name"] for a in apps)
-    assert names == ["fission", "models", "rbac", "router", "scheduler", "services"]
-    for a in apps:
-        assert a["spec"]["destination"]["server"] == CLUSTER["server"]
-        # Every piece resolves to a source path or helm chart leading back into
-        # this repo's manifests/ (self-contained deployable pieces).
-        srcs = a["spec"]["sources"]
-        assert srcs
-        assert any(
-            s.get("path", "").startswith("manifests/") or "chart" in s
-            for s in srcs
-        )
+                if doc and doc.get("kind"):
+                    objs.append(doc)
+    return objs
 
 
-def yaml_load_all(text):
-    import io
-    return list(yaml.safe_load_all(io.StringIO(text)))
+def by_kind(objs, kind, name=None):
+    for o in objs:
+        if o["kind"] == kind and (name is None or o["metadata"]["name"] == name):
+            return o
+    return None
+
+
+def test_renders_full_deployable_stack(tmp_path):
+    objs = run_generator(tmp_path)
+    kinds = {o["kind"] for o in objs}
+    # Kubernetes primitives
+    assert "Namespace" in kinds
+    assert "Deployment" in kinds
+    assert "Service" in kinds
+    assert "ConfigMap" in kinds
+    assert "ServiceAccount" in kinds
+    assert "Role" in kinds and "RoleBinding" in kinds
+    assert "PersistentVolumeClaim" in kinds
+    # Fission CRs
+    assert "Environment" in kinds
+    assert "Function" in kinds
+    assert "HTTPTrigger" in kinds
+    assert "KubernetesWatchTrigger" in kinds
+
+
+def test_conductor_scheduler_deployment(tmp_path):
+    objs = run_generator(tmp_path)
+    dep = by_kind(objs, "Deployment", "conductor")
+    assert dep is not None
+    c = dep["spec"]["template"]["spec"]["containers"][0]
+    assert c["image"] == "ghcr.io/projectinitiative/conductor:0.1.0"
+    assert c["command"] == ["/bin/conductor", "server"]
+    assert dep["spec"]["template"]["spec"]["serviceAccountName"] == "conductor"
+
+
+def test_router_and_tailscale(tmp_path):
+    objs = run_generator(tmp_path)
+    assert by_kind(objs, "Deployment", "litellm") is not None
+    ai = by_kind(objs, "Service", "ai")
+    assert ai is not None
+    assert ai["spec"]["loadBalancerClass"] == "tailscale"
+    assert ai["spec"]["selector"] == {"app": "litellm"}
+
+
+def test_rbac_allows_scale(tmp_path):
+    objs = run_generator(tmp_path)
+    role = by_kind(objs, "Role", "conductor")
+    rules = role["rules"]
+    assert any("deployments/scale" in r["resources"] for r in rules)
+
+
+def test_model_profiles_configmap_has_three_models(tmp_path):
+    objs = run_generator(tmp_path)
+    cm = by_kind(objs, "ConfigMap", "conductor-model-profiles")
+    assert cm is not None
+    txt = cm["data"]["models.yaml"]
+    for name in ["deepseek-v4-flash-vision-exp", "GLM-5.3-Flash-EXL3", "qwen3.8-flash-next"]:
+        assert name in txt
+    assert "deepseek-parity-head" in txt
+    assert "glm-parity-head" in txt
+    assert "qwen-parity-head" in txt
+
+
+def test_model_templates_are_scaled_to_zero(tmp_path):
+    objs = run_generator(tmp_path)
+    deps = [o for o in objs if o["kind"] == "Deployment"
+            and o["metadata"]["name"] in ("deepseek-parity-head", "deepseek-parity-worker",
+                                          "glm-parity-head", "glm-parity-worker",
+                                          "qwen-parity-head", "qwen-parity-worker")]
+    assert len(deps) == 6
+    for d in deps:
+        assert d["spec"]["replicas"] == 0
+        assert d["spec"]["template"]["spec"]["hostNetwork"] is True
+
+
+def test_fission_functions_present(tmp_path):
+    objs = run_generator(tmp_path)
+    assert by_kind(objs, "Function", "conductor-status") is not None
+    assert by_kind(objs, "Function", "conductor-model-ready") is not None
+    env = by_kind(objs, "Environment", "conductor")
+    assert env is not None
+    assert env["spec"]["runtime"]["container"]["command"] == ["/bin/conductor", "function"]
