@@ -28,10 +28,15 @@ func main() {
 	switch os.Args[1] {
 	case "server":
 		runServer()
+	case "lane":
+		if err := runLane(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "conductor lane: %v\n", err)
+			os.Exit(1)
+		}
 	case "function":
 		fission.Run(os.Args[2:])
 	default:
-		fmt.Fprintf(os.Stderr, "Usage: %s [server|function <op>]\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Usage: %s [server|lane <verb>|function <op>]\n", os.Args[0])
 		os.Exit(1)
 	}
 }

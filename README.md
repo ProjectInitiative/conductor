@@ -7,6 +7,47 @@ LiteLLM) and schedules the (expensive) residency swap with a **priority +
 traffic-light** policy so it never thrashes loading/unloading and lower-priority
 models still get served.
 
+> **2026-10 update:** the resident serving engine is now TensorFold (v1.4 flash
+> pair, 3× full-model lane staged), and routing follows the stable alias
+> contract (homelab DEC-0026: the head whose pod template carries
+> `serving.homelab.io/alias=dgx-spark` is resident; the `dgx-spark-backend`
+> Service selects on it). The `lane` operator below is built directly on that
+> contract today; the traffic-light scheduler will drive the same mechanism
+> when it is deployed.
+
+## Operator — lane lifecycle (`conductor lane`)
+
+The `lane` verb set encodes the house runbooks (worker ranks first up, head
+first down, coordinated pair recreation on rank loss, stuck-pod force-clears,
+alias-label routing). Lanes are discovered from cluster labels — any Deployment
+labeled `lane=<name>` or named `<name>-head`/`<name>-worker[1-9]` in the target
+namespace. It shells out to `kubectl`, so it works from a workstation or
+in-cluster with your existing kubeconfig/RBAC.
+
+```bash
+go build -o conductor ./scheduler/cmd/conductor    # or: nix run .#conductor
+
+conductor lane status                    # lanes, ranks, resident, issues, stable endpoints
+conductor lane deploy <lane> --yes       # stage → active (worker-first, waits Running/Ready)
+conductor lane switch <to> --yes         # drop resident (head-first) → deploy target → move alias → verify
+conductor lane switch <to> --dry-run     # preview the exact kubectl sequence, change nothing
+conductor lane drop <lane> --yes         # active → staged
+conductor lane alias <lane> --yes        # move the serving alias only
+conductor lane reconcile --yes           # heal: force-clear stuck/off-node pods; recreate crash-looped pairs
+conductor lane reconcile tensorfold-v14 --yes   # scope to one lane
+```
+
+Safety rails: every mutating verb **prints its plan and requires `--yes`**;
+`--dry-run` shows the kubectl commands without touching anything; mutating runs
+hold a single-flight lock (ConfigMap lease, `--force` to steal a stale one);
+`deploy` refuses while another lane is still serving the alias — use `switch`.
+After a switch, commit the alias-label move to the homelab manifests so a future
+apply doesn't revert it.
+
+Adding a brand-new lane is still a homelab manifest change (checked-in
+Deployments at `replicas: 0`); `conductor lane` operates on lanes that exist in
+the cluster — deploy/switch/drop/reconcile them.
+
 ## Components
 
 - **`generator/`** — a **cdk8s** app. The single place that decides how the whole

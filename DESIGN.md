@@ -163,3 +163,29 @@ in-cluster k8s action · NVIDIA device plugin on chronometer/sextant · Tailscal
 
 This repo owns: the generator, the scheduler, the fission functions, the router config,
 the per-model templates, and the namespaced RBAC.
+
+## 2026-10-06 update — lane operator + current serving contract
+
+The cluster moved from vLLM head/worker pairs to TensorFold lanes, and routing
+now follows the stable alias contract (homelab DEC-0026): the resident model is
+whichever head Deployment's pod template carries
+`serving.homelab.io/alias=dgx-spark`; the `dgx-spark-backend` Service selects on
+that label, so lane cutovers never touch LiteLLM config.
+
+`scheduler/pkg/operator` + `conductor lane <verb>` implement the operator
+surface on top of that contract:
+
+- Lane discovery from cluster labels (`lane=<name>` or `-head`/`-workerN`
+  naming); rank resolution from container args (`--rank N`) or name suffix.
+- Rank order is the contract: up = descending rank (worker2→worker1→head),
+  down = ascending (head first). TP pairs are a single failure domain — any
+  rank loss ⇒ coordinated recreation of the whole lane (RISK-0018).
+- `reconcile` is the recovery path: force-clears pods stuck Terminating or on
+  NotReady nodes, and recreates lanes with crash-looping or orphaned ranks.
+- Mutating verbs are plan-first (`--yes` to execute, `--dry-run` to preview),
+  guarded by a ConfigMap single-flight lease, and shell out to kubectl so they
+  work from any kubeconfig.
+
+The traffic-light scheduler (`conductor server`) will later drive the same
+verbs as its swap executor instead of its original scale-and-rewrite-LiteLLM
+plan; the gateway/fission surfaces are unchanged and still undeployed.
