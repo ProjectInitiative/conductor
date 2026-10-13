@@ -68,7 +68,7 @@ def test_controller_deployment_is_ha_and_architecture_neutral(tmp_path):
     assert container["command"] == ["/bin/conductor", "controller"]
     assert container["image"] == (
         "ghcr.io/projectinitiative/conductor@"
-        "sha256:92ccad5805799f42fa253b22d997992e9c55d61ffe5d17c4f8d8f4c1ae284f97"
+        "sha256:1f2771564902c03b90a77aa4efb13f8cf45b7919d4cd7d7ff4a167dfd0737e04"
     )
     assert container["securityContext"]["readOnlyRootFilesystem"] is True
     assert container["securityContext"]["capabilities"]["drop"] == ["ALL"]
