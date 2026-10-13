@@ -13,4 +13,4 @@ apps:
     targetRevision: HEAD
     # Immutable multi-architecture index (linux/amd64 + linux/arm64), built
     # from 3421ef1. Keep ResourcePool in Observe until failure tests pass.
-    image: ghcr.io/projectinitiative/conductor@sha256:92ccad5805799f42fa253b22d997992e9c55d61ffe5d17c4f8d8f4c1ae284f97
+    image: ghcr.io/projectinitiative/conductor@sha256:1f2771564902c03b90a77aa4efb13f8cf45b7919d4cd7d7ff4a167dfd0737e04
