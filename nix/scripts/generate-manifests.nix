@@ -3,7 +3,7 @@ pkgs.writeShellScriptBin "generate-manifests" ''
   set -euo pipefail
   export PATH="${pythonEnv}/bin:${pkgs.nodejs_22}/bin:$PATH"
 
-  if [ -z "${MANIFEST_OUTPUT_DIR:-}" ]; then
+  if [ -z "''${MANIFEST_OUTPUT_DIR:-}" ]; then
     export MANIFEST_OUTPUT_DIR=$(pwd)/.direnv/manifests
   fi
   mkdir -p "$MANIFEST_OUTPUT_DIR"
