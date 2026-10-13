@@ -195,7 +195,10 @@ def main():
         print("Error: no clusters/*.yaml found", file=sys.stderr)
         sys.exit(1)
 
-    app = App(outdir=os.environ.get("MANIFEST_OUTPUT_DIR", ".direnv/manifests"))
+    # The homelab cdk8s-v1.0 CMP runs main.py directly and publishes
+    # dist/*.k8s.yaml. Local/Nix tooling overrides this with
+    # MANIFEST_OUTPUT_DIR=.direnv/manifests.
+    app = App(outdir=os.environ.get("MANIFEST_OUTPUT_DIR", "dist"))
     for cluster_file in cluster_files:
         cluster = load_yaml(cluster_file) or {}
         for deploy in cluster.get("apps", []):

@@ -32,6 +32,13 @@ def by_kind(objs, kind, name=None):
     return None
 
 
+def test_cmp_default_output_matches_plugin_contract(tmp_path, monkeypatch):
+    monkeypatch.delenv("MANIFEST_OUTPUT_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)
+    gen.main()
+    assert list((tmp_path / "dist").glob("*.yaml"))
+
+
 def test_renders_operator_control_plane_only(tmp_path):
     objs = run_generator(tmp_path)
     kinds = {obj["kind"] for obj in objs}
