@@ -41,7 +41,11 @@ class ConductorStack(Chart):
         super().__init__(scope, namespace, disable_resource_name_hashes=True)
         print(f"Rendering Conductor stack in namespace {namespace}", file=sys.stderr)
 
-        self._namespace(namespace)
+        # Existing workload namespaces are normally homelab-owned. Rendering a
+        # Namespace here would make deleting the Argo Application capable of
+        # cascading deletion across every manually managed experiment in it.
+        if deploy.get("manageNamespace", True):
+            self._namespace(namespace)
         self._crds()
         self._rbac(namespace)
         self._controller(namespace, image)

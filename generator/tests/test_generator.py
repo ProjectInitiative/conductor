@@ -44,6 +44,10 @@ def test_renders_operator_control_plane_only(tmp_path):
     assert "ClusterRole" in kinds and "ClusterRoleBinding" in kinds
     assert "PodDisruptionBudget" in kinds
 
+    # llm-test already exists and contains manually managed experiment lanes.
+    # The operator Application must never own or prune that shared Namespace.
+    assert by_kind(objs, "Namespace", "llm-test") is None
+
     # Legacy scheduler/router/Fission/model resources are deliberately absent.
     assert "Environment" not in kinds
     assert "Function" not in kinds
@@ -62,6 +66,10 @@ def test_controller_deployment_is_ha_and_architecture_neutral(tmp_path):
     assert pod["serviceAccountName"] == "conductor"
     container = pod["containers"][0]
     assert container["command"] == ["/bin/conductor", "controller"]
+    assert container["image"] == (
+        "ghcr.io/projectinitiative/conductor@"
+        "sha256:92ccad5805799f42fa253b22d997992e9c55d61ffe5d17c4f8d8f4c1ae284f97"
+    )
     assert container["securityContext"]["readOnlyRootFilesystem"] is True
     assert container["securityContext"]["capabilities"]["drop"] == ["ALL"]
 

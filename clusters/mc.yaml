@@ -2,13 +2,15 @@ name: mc
 server: https://172.16.1.50:6443
 project: conductor
 argoNamespace: argocd-mc
-# ONE self-contained app. The generator renders the whole stack into this
-# namespace; Argo CD applies it via the cdk8s-v1.0 CMP plugin.
+# ONE control-plane app. It installs Conductor into the existing llm-test
+# namespace but deliberately does not own that Namespace: manual experiment
+# lanes share it and must survive Application deletion or pruning.
 apps:
   - name: conductor
     namespace: llm-test
+    manageNamespace: false
     repoURL: https://github.com/projectinitiative/conductor.git
     targetRevision: HEAD
-    # CI publishes this tag as one OCI index for linux/amd64 + linux/arm64.
-    # Pin the resulting digest before changing ResourcePool to Manage.
-    image: ghcr.io/projectinitiative/conductor:0.2.0
+    # Immutable multi-architecture index (linux/amd64 + linux/arm64), built
+    # from 3421ef1. Keep ResourcePool in Observe until failure tests pass.
+    image: ghcr.io/projectinitiative/conductor@sha256:92ccad5805799f42fa253b22d997992e9c55d61ffe5d17c4f8d8f4c1ae284f97
