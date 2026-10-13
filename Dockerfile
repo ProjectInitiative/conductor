@@ -2,7 +2,7 @@
 # BuildKit sets TARGETOS/TARGETARCH for each requested platform. The resulting
 # scratch image contains only the static controller binary: no shell, kubectl,
 # or host-specific runtime is required.
-FROM --platform=$BUILDPLATFORM golang:1.25.5-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build
 ARG TARGETOS
 ARG TARGETARCH
 WORKDIR /src
