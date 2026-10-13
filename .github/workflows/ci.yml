@@ -12,7 +12,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@v16
       - name: Nix flake check (formatting + tests)
-        run: nix flake check --all-systems
+        # Current system only: the aarch64 checks cannot run on x86 runners.
+        run: nix flake check
 
   build:
     runs-on: ubuntu-latest
