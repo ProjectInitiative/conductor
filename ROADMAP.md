@@ -22,7 +22,9 @@ digest, and explicit approval to set `managementMode: Manage`.
 - Add idempotent switch phases, min-dwell/cooldown, rollback, and endpoint gate.
 - Convert `conductor lane` commands to create overrides and wait on Conditions;
   retain an explicitly named unsafe direct mode only as break glass.
-- Remove the legacy `pkg/k8s.Swapper` and Fission watch path.
+- Rebuild demand-aware admission/gateway on the operator API when milestone 4
+  lands (the never-deployed legacy gateway/Swapper/Fission stack was deleted in
+  2026-10-13 cleanup; git history preserves it).
 
 ## Milestone 3 — authenticated API and interactive dashboard
 
@@ -79,5 +81,5 @@ astrolabe AI/build workloads, activate gaming, then return to the baseline.
 - No arbitrary Kubernetes apply engine.
 - No direct web mutations of Deployments.
 - No automatic NotReady-node force deletion without fencing.
-- No deployment of stale Conductor router/model/Fission resources.
+- No deployment of stale Conductor router/model resources.
 - No `Manage` default before Observe-mode qualification.

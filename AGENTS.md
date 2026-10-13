@@ -1,10 +1,10 @@
 # Conductor — Agent guidance
 
 Conductor is a Nix/devenv project that combines a **cdk8s Python generator**
-(`generator/`) with a **Go multi-headed binary** (`scheduler/`). The primary
-runtime is now a Kubernetes-native controller-runtime operator; the legacy
-gateway/Fission surfaces remain undeployed during migration. `DESIGN.md` is the
-contract and `ROADMAP.md` defines future workload/UI expansion.
+(`generator/`) with a **Go operator binary** (`scheduler/`). The runtime is a
+Kubernetes-native controller-runtime operator plus a break-glass lane CLI.
+`DESIGN.md` is the contract and `ROADMAP.md` defines future workload/UI
+expansion.
 
 **The cdk8s generator renders the deployable operator control plane** (CRDs,
 RBAC, controller Deployment/PDB, and baseline custom resources). Existing model
@@ -24,10 +24,11 @@ Only edit files under your assigned path. The parent merges branches.
 ## Conventions
 
 - **Nix / devenv**: `use flake` in `.envrc`; shell provided by `flake.nix` +
-  `devenv.nix`. Tools: `generate-manifests`, `import-crds`, `go build/test`, `nix run .#conductor -- server`.
-- **Go**: module `github.com/projectinitiative/conductor`. Multi-headed binary
-  (`conductor server` | `conductor function <op>`). Keep the policy engine
-  **pure & clock-injectable**; test with a fake clock (no cluster).
+  `devenv.nix`. Tools: `generate-manifests`, `import-crds`, `go build/test`, `nix run .#conductor -- controller`.
+- **Go**: module `github.com/projectinitiative/conductor`. Modes:
+  `conductor controller` (operator) | `conductor lane <verb>` (break-glass).
+  Keep reconciliation logic **pure & clock-injectable**; test with a fake
+  clock / fake client (no cluster).
 - **cdk8s**: emit resources via `ApiObject` + `JsonPatch.add` (raw YAML) so no
   pre-generated CRD stubs are required. `import-crds` is optional.
 - **Formatting**: `nixfmt` for `.nix`, `gofmt` for Go (excluding `vendor/`),

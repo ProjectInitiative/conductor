@@ -68,7 +68,7 @@
           generatorEnv = pythonSet.mkVirtualEnv "conductor-generator-env" workspace.deps.default;
 
           # ------------------------------------------------------------------
-          # Go (scheduler / fission) via buildGoModule
+          # Go operator binary via buildGoModule
           # ------------------------------------------------------------------
           version = "0.1.0";
           rev = "dirty";

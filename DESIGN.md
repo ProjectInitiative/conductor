@@ -151,8 +151,8 @@ force deletion and relocation. The web UI must make this distinction explicit.
 - Homelab continues to own TensorFold Deployment templates.
 - Conductor's generator installs only CRDs, RBAC, controller Deployment/PDB,
   and baseline CRs.
-- The stale vLLM model templates, Fission watch functions, and router are not
-  rendered.
+- The stale vLLM model templates, router, and watch triggers were never
+  deployed and have been deleted; existing lanes remain homelab-owned.
 - `dgx-spark` begins in `Observe`; only `tensorfold-v14` is an initial adoption
   candidate.
 - Argo must ignore adopted Deployment replica fields before `Manage` is enabled
@@ -175,7 +175,7 @@ without turning the first recovery controller into a general manifest engine.
 
 1. Unit tests for intent precedence, ordering, stale pods, endpoint cardinality,
    and restart at every phase.
-2. Generator tests proving no stale model/router/Fission resources are emitted.
+2. Generator tests proving no model/router/watch-trigger resources are emitted.
 3. One OCI index containing amd64 and arm64 manifests.
 4. Observe-mode status/event comparison against the live TensorFold lane.
 5. Controlled pod failure, controller restart, and leader failover.
