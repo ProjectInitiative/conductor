@@ -7,7 +7,9 @@ resourcePools:
   dgx-spark:
     # Observe is the safe migration default. Promote to Manage only after the
     # controller's status/events match the live lane during failure injection.
-    managementMode: Observe
+    # Live recovery exercise: allow the controller to execute the persisted
+    # head-first shutdown / worker-first startup plan against tensorfold-v14.
+    managementMode: Manage
     capacity:
       slots: 1
     nodeSelector:
