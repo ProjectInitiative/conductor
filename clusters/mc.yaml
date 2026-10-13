@@ -9,4 +9,6 @@ apps:
     namespace: llm-test
     repoURL: https://github.com/projectinitiative/conductor.git
     targetRevision: HEAD
-    image: ghcr.io/projectinitiative/conductor:0.1.0
+    # CI publishes this tag as one OCI index for linux/amd64 + linux/arm64.
+    # Pin the resulting digest before changing ResourcePool to Manage.
+    image: ghcr.io/projectinitiative/conductor:0.2.0

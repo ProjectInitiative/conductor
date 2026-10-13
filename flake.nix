@@ -82,6 +82,7 @@
               inherit version;
               src = ./scheduler;
               vendorHash = null;
+              env.CGO_ENABLED = "0";
               ldflags = [
                 "-s"
                 "-w"

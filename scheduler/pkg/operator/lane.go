@@ -567,6 +567,14 @@ func Reconcile(k *Kube, lanes map[string]*Lane, names []string, pods []Pod, owne
 			if err := Drop(k, lanes, name, o); err != nil {
 				return results, fmt.Errorf("recreate %s: %w", name, err)
 			}
+			// Drop changed every rank's desired/current state. Rediscover before
+			// Deploy so its healthy-rank skip logic cannot act on the stale
+			// pre-drop snapshot and leave the surviving rank scaled to zero.
+			fresh, derr := Discover(k, o.Namespace, o.AliasLabel)
+			if derr != nil {
+				return results, fmt.Errorf("refreshing lane state for %s: %w", name, derr)
+			}
+			lanes = fresh
 			if err := Deploy(k, lanes, name, o); err != nil {
 				return results, fmt.Errorf("recreate %s: %w", name, err)
 			}

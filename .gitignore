@@ -40,3 +40,6 @@ scheduler/bin/
 # Vendored submodules / repos (root only; scheduler/vendor is committed for
 # hermetic offline builds)
 /vendor/
+
+# pi subagent artifacts
+.pi-subagents/

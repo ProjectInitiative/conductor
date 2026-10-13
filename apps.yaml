@@ -1,38 +1,55 @@
-# Conductor app config. Single source of truth for the self-contained app.
-# The cdk8s generator (generator/main.py) renders ALL deployable objects
-# (Deployments, Services, ConfigMaps, Fission CRs, RBAC, per-model templates)
-# from this + clusters/<cluster>.yaml. Argo CD runs it via the cdk8s-v1.0 CMP
-# plugin for ONE homelab Application.
-defaults:
-  repoURL: https://github.com/projectinitiative/conductor.git
-  targetRevision: HEAD
+# Conductor desired-state API baseline.
+#
+# The operator references existing homelab-owned Deployments. It does not own
+# their pod templates. Temporary CLI/web intent belongs in WorkloadOverride CRs,
+# never in this GitOps baseline.
+resourcePools:
+  dgx-spark:
+    # Observe is the safe migration default. Promote to Manage only after the
+    # controller's status/events match the live lane during failure injection.
+    managementMode: Observe
+    capacity:
+      slots: 1
+    nodeSelector:
+      ai-compute: "true"
+      nvidia.com/gpu.present: "true"
+    routing:
+      serviceName: dgx-spark-backend
+      selector:
+        serving.homelab.io/alias: dgx-spark
+    policy:
+      notReadyGracePeriod: 2m
+      requireFencing: true
+      defaultMinDwell: 15m
+      cooldown: 5m
 
-# Scheduler model profiles. See DESIGN.md §2.1.
-modelProfiles:
-  deepseek-v4-flash-vision-exp:
-    priority: 1
-    image: ghcr.io/anemll/dspark-vllm-gx10:0.1.1
-    head: {deployment: deepseek-parity-head, hostIP: 172.16.4.55, port: 8000}
-    worker: {deployment: deepseek-parity-worker, hostIP: 172.16.4.56}
-    health: {path: /health, timeout: 3600s}
-    quantum: {max_requests: 32, max_seconds: 600}
-    min_dwell: 900s
-    cooldown: 300s
-  GLM-5.3-Flash-EXL3:
-    priority: 2
-    image: ghcr.io/miaai-lab/glm-5.3-flash-2x-dgx-sparks:exl3
-    head: {deployment: glm-parity-head, hostIP: 172.16.4.55, port: 8888}
-    worker: {deployment: glm-parity-worker, hostIP: 172.16.4.56}
-    health: {path: /health, timeout: 3600s}
-    quantum: {max_requests: 16, max_seconds: 600}
-    min_dwell: 900s
-    cooldown: 300s
-  qwen3.8-flash-next:
-    priority: 3
-    image: vllm/vllm-openai:qwen38-flash-next
-    head: {deployment: qwen-parity-head, hostIP: 172.16.4.55, port: 8888}
-    worker: {deployment: qwen-parity-worker, hostIP: 172.16.4.56}
-    health: {path: /health, timeout: 3600s}
-    quantum: {max_requests: 16, max_seconds: 600}
-    min_dwell: 900s
-    cooldown: 300s
+managedWorkloads:
+  tensorfold-v14:
+    poolRef: dgx-spark
+    desiredState: Resident
+    priority: 100
+    driver:
+      type: DeploymentSet
+      deploymentSet:
+        recoveryPolicy: RecreateTogether
+        members:
+          - name: tensorfold-v14-worker
+            role: worker
+            startOrder: 10
+            stopOrder: 20
+            replicas: 1
+            readyGate: ContainersRunning
+          - name: tensorfold-v14-head
+            role: head
+            startOrder: 20
+            stopOrder: 10
+            replicas: 1
+            readyGate: DeploymentAvailable
+    qualification:
+      serviceName: dgx-spark-backend
+      path: /health
+      timeout: 45m
+    routing:
+      serviceName: dgx-spark-backend
+      selector:
+        serving.homelab.io/alias: dgx-spark

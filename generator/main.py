@@ -41,13 +41,15 @@ class ConductorStack(Chart):
         print(f"Rendering Conductor stack in namespace {namespace}", file=sys.stderr)
 
         self._namespace(namespace)
+        self._crds()
         self._rbac(namespace)
-        self._scheduler(namespace, image)
-        self._router(namespace)
-        self._fission(namespace, image)
-        self._models(namespace, profiles)
-        self._services(namespace)
-        self._state_configmaps(namespace, profiles)
+        self._controller(namespace, image)
+
+        # The Kubernetes-native operator starts with reference-only ownership
+        # of explicitly declared workloads. The legacy router/Fission/model
+        # templates are intentionally not rendered: they describe obsolete
+        # vLLM lanes and would compete with homelab-owned TensorFold resources.
+        self._baseline(namespace, cfg)
 
     # ---- emit helper ----------------------------------------------------
     def _emit(self, name, api_version, kind, manifest):
@@ -64,6 +66,16 @@ class ConductorStack(Chart):
             "metadata": {"name": ns, "labels": {"purpose": "conductor", "vault-auth": "enabled"}},
         })
 
+    # ---- CRDs -----------------------------------------------------------
+    def _crds(self):
+        crd_dir = os.path.join(GENERATOR_DIR, "crds")
+        for filename in sorted(os.listdir(crd_dir)):
+            if not filename.endswith(".yaml"):
+                continue
+            manifest = load_yaml(os.path.join(crd_dir, filename))
+            self._emit("crd-" + manifest["metadata"]["name"].replace(".", "-"),
+                       manifest["apiVersion"], manifest["kind"], manifest)
+
     # ---- RBAC -----------------------------------------------------------
     def _rbac(self, ns):
         self._emit("conductor-sa", "v1", "ServiceAccount",
@@ -71,18 +83,24 @@ class ConductorStack(Chart):
         self._emit("conductor-role", "rbac.authorization.k8s.io/v1", "Role", {
             "metadata": {"name": "conductor", "namespace": ns},
             "rules": [
-                {"apiGroups": ["apps"], "resources": ["deployments"],
-                 "verbs": ["get", "list", "watch", "patch", "update"]},
+                {"apiGroups": ["conductor.projectinitiative.io"],
+                 "resources": ["resourcepools", "managedworkloads", "workloadoverrides"],
+                 "verbs": ["get", "list", "watch"]},
+                {"apiGroups": ["conductor.projectinitiative.io"],
+                 "resources": ["resourcepools/status", "managedworkloads/status", "workloadoverrides/status"],
+                 "verbs": ["get", "update", "patch"]},
+                {"apiGroups": ["apps"], "resources": ["deployments", "replicasets"],
+                 "verbs": ["get", "list", "watch"]},
                 {"apiGroups": ["apps"], "resources": ["deployments/scale"],
                  "verbs": ["get", "patch", "update"]},
-                {"apiGroups": [""], "resources": ["pods"],
+                {"apiGroups": [""], "resources": ["pods", "services"],
                  "verbs": ["get", "list", "watch"]},
-                {"apiGroups": [""], "resources": ["configmaps"],
-                 "verbs": ["get", "list", "watch", "create", "update", "patch"]},
-                {"apiGroups": [""], "resources": ["services"],
+                {"apiGroups": ["discovery.k8s.io"], "resources": ["endpointslices"],
                  "verbs": ["get", "list", "watch"]},
+                {"apiGroups": [""], "resources": ["events"],
+                 "verbs": ["create", "patch", "update"]},
                 {"apiGroups": ["coordination.k8s.io"], "resources": ["leases"],
-                 "verbs": ["get", "list", "watch", "create", "update", "patch"]},
+                 "verbs": ["get", "list", "watch", "create", "update", "patch", "delete"]},
             ],
         })
         self._emit("conductor-rolebinding", "rbac.authorization.k8s.io/v1", "RoleBinding", {
@@ -90,8 +108,77 @@ class ConductorStack(Chart):
             "subjects": [{"kind": "ServiceAccount", "name": "conductor", "namespace": ns}],
             "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": "conductor"},
         })
+        self._emit("conductor-node-reader", "rbac.authorization.k8s.io/v1", "ClusterRole", {
+            "metadata": {"name": "conductor-node-reader"},
+            "rules": [{"apiGroups": [""], "resources": ["nodes"], "verbs": ["get", "list", "watch"]}],
+        })
+        self._emit("conductor-node-reader-binding", "rbac.authorization.k8s.io/v1", "ClusterRoleBinding", {
+            "metadata": {"name": "conductor-node-reader"},
+            "subjects": [{"kind": "ServiceAccount", "name": "conductor", "namespace": ns}],
+            "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": "conductor-node-reader"},
+        })
 
-    # ---- scheduler ------------------------------------------------------
+    # ---- Kubernetes-native controller ----------------------------------
+    def _controller(self, ns, image):
+        labels = {"app.kubernetes.io/name": "conductor", "app.kubernetes.io/component": "controller"}
+        self._emit("conductor-controller", "apps/v1", "Deployment", {
+            "metadata": {"name": "conductor-controller", "namespace": ns},
+            "spec": {
+                "replicas": 2,
+                "selector": {"matchLabels": labels},
+                "template": {
+                    "metadata": {"labels": labels},
+                    "spec": {
+                        "serviceAccountName": "conductor",
+                        "terminationGracePeriodSeconds": 30,
+                        "securityContext": {"runAsNonRoot": True, "seccompProfile": {"type": "RuntimeDefault"}},
+                        "topologySpreadConstraints": [{
+                            "maxSkew": 1,
+                            "topologyKey": "kubernetes.io/hostname",
+                            "whenUnsatisfiable": "ScheduleAnyway",
+                            "labelSelector": {"matchLabels": labels},
+                        }],
+                        "containers": [{
+                            "name": "controller",
+                            "image": image,
+                            "imagePullPolicy": "IfNotPresent",
+                            "command": ["/bin/conductor", "controller"],
+                            "ports": [
+                                {"name": "metrics", "containerPort": 8080},
+                                {"name": "health", "containerPort": 8081},
+                            ],
+                            "readinessProbe": {"httpGet": {"path": "/readyz", "port": "health"}, "periodSeconds": 10},
+                            "livenessProbe": {"httpGet": {"path": "/healthz", "port": "health"}, "periodSeconds": 20},
+                            "securityContext": {
+                                "allowPrivilegeEscalation": False,
+                                "readOnlyRootFilesystem": True,
+                                "capabilities": {"drop": ["ALL"]},
+                            },
+                            "resources": {
+                                "requests": {"cpu": "50m", "memory": "96Mi"},
+                                "limits": {"cpu": "500m", "memory": "256Mi"},
+                            },
+                        }],
+                    },
+                },
+            },
+        })
+        self._emit("conductor-controller-pdb", "policy/v1", "PodDisruptionBudget", {
+            "metadata": {"name": "conductor-controller", "namespace": ns},
+            "spec": {"maxUnavailable": 1, "selector": {"matchLabels": labels}},
+        })
+
+    def _baseline(self, ns, cfg):
+        for name, spec in cfg.get("resourcePools", {}).items():
+            self._emit("pool-" + name, "conductor.projectinitiative.io/v1alpha1", "ResourcePool", {
+                "metadata": {"name": name, "namespace": ns}, "spec": spec,
+            })
+        for name, spec in cfg.get("managedWorkloads", {}).items():
+            self._emit("workload-" + name, "conductor.projectinitiative.io/v1alpha1", "ManagedWorkload", {
+                "metadata": {"name": name, "namespace": ns}, "spec": spec,
+            })
+
+    # ---- legacy scheduler (not rendered) -------------------------------
     def _scheduler(self, ns, image):
         self._emit("conductor-deploy", "apps/v1", "Deployment", {
             "metadata": {"name": "conductor", "namespace": ns},

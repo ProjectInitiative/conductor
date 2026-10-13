@@ -1,4 +1,4 @@
-"""Tests for the Conductor cdk8s generator (self-contained deployable)."""
+"""Tests for the Kubernetes-native Conductor control plane."""
 
 import io
 import os
@@ -21,91 +21,82 @@ def run_generator(tmp_path):
         if not name.endswith(".yaml"):
             continue
         with open(os.path.join(outdir, name)) as f:
-            for doc in yaml_load_all(f.read()):
-                if doc and doc.get("kind"):
-                    objs.append(doc)
+            objs.extend(doc for doc in yaml.safe_load_all(f) if doc)
     return objs
 
 
 def by_kind(objs, kind, name=None):
-    for o in objs:
-        if o["kind"] == kind and (name is None or o["metadata"]["name"] == name):
-            return o
+    for obj in objs:
+        if obj["kind"] == kind and (name is None or obj["metadata"]["name"] == name):
+            return obj
     return None
 
 
-def test_renders_full_deployable_stack(tmp_path):
+def test_renders_operator_control_plane_only(tmp_path):
     objs = run_generator(tmp_path)
-    kinds = {o["kind"] for o in objs}
-    # Kubernetes primitives
-    assert "Namespace" in kinds
+    kinds = {obj["kind"] for obj in objs}
+    assert "CustomResourceDefinition" in kinds
+    assert "ResourcePool" in kinds
+    assert "ManagedWorkload" in kinds
     assert "Deployment" in kinds
-    assert "Service" in kinds
-    assert "ConfigMap" in kinds
     assert "ServiceAccount" in kinds
     assert "Role" in kinds and "RoleBinding" in kinds
-    assert "PersistentVolumeClaim" in kinds
-    # Fission CRs
-    assert "Environment" in kinds
-    assert "Function" in kinds
-    assert "HTTPTrigger" in kinds
-    assert "KubernetesWatchTrigger" in kinds
+    assert "ClusterRole" in kinds and "ClusterRoleBinding" in kinds
+    assert "PodDisruptionBudget" in kinds
+
+    # Legacy scheduler/router/Fission/model resources are deliberately absent.
+    assert "Environment" not in kinds
+    assert "Function" not in kinds
+    assert "HTTPTrigger" not in kinds
+    assert by_kind(objs, "Deployment", "litellm") is None
+    assert by_kind(objs, "PersistentVolumeClaim", "model-cache") is None
 
 
-def test_conductor_scheduler_deployment(tmp_path):
+def test_controller_deployment_is_ha_and_architecture_neutral(tmp_path):
     objs = run_generator(tmp_path)
-    dep = by_kind(objs, "Deployment", "conductor")
+    dep = by_kind(objs, "Deployment", "conductor-controller")
     assert dep is not None
-    c = dep["spec"]["template"]["spec"]["containers"][0]
-    assert c["image"] == "ghcr.io/projectinitiative/conductor:0.1.0"
-    assert c["command"] == ["/bin/conductor", "server"]
-    assert dep["spec"]["template"]["spec"]["serviceAccountName"] == "conductor"
+    assert dep["spec"]["replicas"] == 2
+    pod = dep["spec"]["template"]["spec"]
+    assert "nodeSelector" not in pod
+    assert pod["serviceAccountName"] == "conductor"
+    container = pod["containers"][0]
+    assert container["command"] == ["/bin/conductor", "controller"]
+    assert container["securityContext"]["readOnlyRootFilesystem"] is True
+    assert container["securityContext"]["capabilities"]["drop"] == ["ALL"]
 
 
-def test_router_and_tailscale(tmp_path):
-    objs = run_generator(tmp_path)
-    assert by_kind(objs, "Deployment", "litellm") is not None
-    ai = by_kind(objs, "Service", "ai")
-    assert ai is not None
-    assert ai["spec"]["loadBalancerClass"] == "tailscale"
-    assert ai["spec"]["selector"] == {"app": "litellm"}
-
-
-def test_rbac_allows_scale(tmp_path):
+def test_rbac_is_scoped_for_native_reconciliation(tmp_path):
     objs = run_generator(tmp_path)
     role = by_kind(objs, "Role", "conductor")
     rules = role["rules"]
-    assert any("deployments/scale" in r["resources"] for r in rules)
+    assert any("deployments/scale" in rule["resources"] for rule in rules)
+    assert any("replicasets" in rule["resources"] for rule in rules)
+    assert any("pods" in rule["resources"] and rule["verbs"] == ["get", "list", "watch"] for rule in rules)
+    assert not any("delete" in rule["verbs"] for rule in rules if "pods" in rule["resources"])
+    assert any("endpointslices" in rule["resources"] for rule in rules)
+    node_role = by_kind(objs, "ClusterRole", "conductor-node-reader")
+    assert node_role["rules"] == [{"apiGroups": [""], "resources": ["nodes"], "verbs": ["get", "list", "watch"]}]
 
 
-def test_model_profiles_configmap_has_three_models(tmp_path):
+def test_tensorfold_starts_observe_only(tmp_path):
     objs = run_generator(tmp_path)
-    cm = by_kind(objs, "ConfigMap", "conductor-model-profiles")
-    assert cm is not None
-    txt = cm["data"]["models.yaml"]
-    for name in ["deepseek-v4-flash-vision-exp", "GLM-5.3-Flash-EXL3", "qwen3.8-flash-next"]:
-        assert name in txt
-    assert "deepseek-parity-head" in txt
-    assert "glm-parity-head" in txt
-    assert "qwen-parity-head" in txt
+    pool = by_kind(objs, "ResourcePool", "dgx-spark")
+    workload = by_kind(objs, "ManagedWorkload", "tensorfold-v14")
+    assert pool["spec"]["managementMode"] == "Observe"
+    assert pool["spec"]["policy"]["requireFencing"] is True
+    members = workload["spec"]["driver"]["deploymentSet"]["members"]
+    assert [member["name"] for member in members] == ["tensorfold-v14-worker", "tensorfold-v14-head"]
+    assert workload["spec"]["driver"]["deploymentSet"]["recoveryPolicy"] == "RecreateTogether"
 
 
-def test_model_templates_are_scaled_to_zero(tmp_path):
+def test_crds_have_status_subresources(tmp_path):
     objs = run_generator(tmp_path)
-    deps = [o for o in objs if o["kind"] == "Deployment"
-            and o["metadata"]["name"] in ("deepseek-parity-head", "deepseek-parity-worker",
-                                          "glm-parity-head", "glm-parity-worker",
-                                          "qwen-parity-head", "qwen-parity-worker")]
-    assert len(deps) == 6
-    for d in deps:
-        assert d["spec"]["replicas"] == 0
-        assert d["spec"]["template"]["spec"]["hostNetwork"] is True
-
-
-def test_fission_functions_present(tmp_path):
-    objs = run_generator(tmp_path)
-    assert by_kind(objs, "Function", "conductor-status") is not None
-    assert by_kind(objs, "Function", "conductor-model-ready") is not None
-    env = by_kind(objs, "Environment", "conductor")
-    assert env is not None
-    assert env["spec"]["runtime"]["container"]["command"] == ["/bin/conductor", "function"]
+    crds = [obj for obj in objs if obj["kind"] == "CustomResourceDefinition"]
+    assert {crd["metadata"]["name"] for crd in crds} == {
+        "resourcepools.conductor.projectinitiative.io",
+        "managedworkloads.conductor.projectinitiative.io",
+        "workloadoverrides.conductor.projectinitiative.io",
+    }
+    for crd in crds:
+        assert crd["spec"]["versions"][0]["subresources"] == {"status": {}}

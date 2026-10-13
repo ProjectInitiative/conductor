@@ -1,19 +1,22 @@
 # Conductor — Agent guidance
 
 Conductor is a Nix/devenv project that combines a **cdk8s Python generator**
-(`generator/`) with a **Go multi-headed binary** (`scheduler/`) that runs both
-the swap scheduler/gateway and Fission functions. `DESIGN.md` is the contract.
+(`generator/`) with a **Go multi-headed binary** (`scheduler/`). The primary
+runtime is now a Kubernetes-native controller-runtime operator; the legacy
+gateway/Fission surfaces remain undeployed during migration. `DESIGN.md` is the
+contract and `ROADMAP.md` defines future workload/UI expansion.
 
-**The cdk8s generator renders the *deployable* objects** (Deployments, Services,
-ConfigMaps, Fission CRs, RBAC, per-model templates). There is **no hand-written
-Kustomize** — do not add a `manifests/` tree.
+**The cdk8s generator renders the deployable operator control plane** (CRDs,
+RBAC, controller Deployment/PDB, and baseline custom resources). Existing model
+Deployments remain homelab-owned and are referenced explicitly. There is **no
+hand-written Kustomize** — do not add a `manifests/` tree.
 
 ## Layout (disjoint agent domains — edit only your own)
 
 | Path | Owner | Notes |
 |---|---|---|
 | `generator/` | agent-A | cdk8s generator: emits deployable objects from apps.yaml + clusters/*.yaml |
-| `scheduler/` | agent-B | Go: policy engine, gateway, k8s lifecycle, fission functions |
+| `scheduler/` | agent-B | Go: CRD APIs, operator, policy engine, migration CLI, legacy gateway |
 | `apps.yaml`, `clusters/` | agent-A | source of truth (model profiles, namespace, image tag) |
 
 Only edit files under your assigned path. The parent merges branches.

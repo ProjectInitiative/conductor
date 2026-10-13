@@ -1,6 +1,7 @@
 // conductor is a multi-headed binary. Modeled on golden-template's
 // compiled-serverless pattern:
 //
+//	conductor controller                  — Kubernetes-native workload operator
 //	conductor server                      — scheduler + traffic-light gateway (long-running)
 //	conductor function status             — Fission function (status)
 //	conductor function model-ready        — Fission function (swap finalize on Ready)
@@ -26,6 +27,8 @@ func main() {
 		return
 	}
 	switch os.Args[1] {
+	case "controller":
+		runController()
 	case "server":
 		runServer()
 	case "lane":
@@ -36,7 +39,7 @@ func main() {
 	case "function":
 		fission.Run(os.Args[2:])
 	default:
-		fmt.Fprintf(os.Stderr, "Usage: %s [server|lane <verb>|function <op>]\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Usage: %s [controller|server|lane <verb>|function <op>]\n", os.Args[0])
 		os.Exit(1)
 	}
 }
