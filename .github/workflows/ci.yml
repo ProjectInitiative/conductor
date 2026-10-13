@@ -10,8 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: DeterminateSystems/nix-install-action@v4
-      - uses: DeterminateSystems/magic-nix-cache-action@v8
+      - uses: DeterminateSystems/nix-installer-action@v16
       - name: Nix flake check (formatting + tests)
         run: nix flake check --all-systems
 
@@ -20,8 +19,7 @@ jobs:
     needs: flake-check
     steps:
       - uses: actions/checkout@v4
-      - uses: DeterminateSystems/nix-install-action@v4
-      - uses: DeterminateSystems/magic-nix-cache-action@v8
+      - uses: DeterminateSystems/nix-installer-action@v16
       - name: Build conductor binary
         run: nix build .#conductor --no-link
       - name: Build generator env
@@ -31,8 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: DeterminateSystems/nix-install-action@v4
-      - uses: DeterminateSystems/magic-nix-cache-action@v8
+      - uses: DeterminateSystems/nix-installer-action@v16
       - name: Generate manifests
         run: |
           nix run .#generate-manifests
