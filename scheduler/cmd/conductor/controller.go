@@ -11,6 +11,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -23,11 +24,13 @@ func runController() {
 	must(clientgoscheme.AddToScheme(scheme))
 	must(conductorv1alpha1.AddToScheme(scheme))
 
+	namespace := envOr("CONDUCTOR_NAMESPACE", "llm-test")
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                  scheme,
+		Cache:                   cache.Options{DefaultNamespaces: map[string]cache.Config{namespace: {}}},
 		LeaderElection:          true,
 		LeaderElectionID:        "conductor-controller.conductor.projectinitiative.io",
-		LeaderElectionNamespace: envOr("CONDUCTOR_NAMESPACE", "llm-test"),
+		LeaderElectionNamespace: namespace,
 		LeaseDuration:           durationPtr(30 * time.Second),
 		RenewDeadline:           durationPtr(20 * time.Second),
 		RetryPeriod:             durationPtr(5 * time.Second),
