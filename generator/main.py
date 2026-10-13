@@ -2,9 +2,9 @@
 """Conductor — cdk8s generator.
 
 Renders the deployable Conductor control plane (CRDs, RBAC, HA controller
-Deployment + PDB, and baseline ResourcePool/ManagedWorkload custom resources)
-from a single declarative source of truth. This is what Argo CD runs via the
-`cdk8s-v1.0` CMP plugin: the generator here decides how everything is
+Deployment + PDB). Workload policy is homelab-owned and applied separately as
+ResourcePool/ManagedWorkload custom resources. This is what Argo CD runs via
+the `cdk8s-v1.0` CMP plugin: the generator here decides how the operator is
 assembled, and Argo CD just applies the result.
 
 Existing model Deployments stay homelab-owned; the operator references them
@@ -50,10 +50,9 @@ class ConductorStack(Chart):
         self._rbac(namespace)
         self._controller(namespace, image)
 
-        # The Kubernetes-native operator starts with reference-only ownership
-        # of explicitly declared workloads. It never renders model Deployments,
-        # routers, or watch triggers: those are homelab-owned resources.
-        self._baseline(namespace, cfg)
+        # Workload policy is deliberately not rendered here. ResourcePool and
+        # ManagedWorkload objects are homelab-owned configuration and are
+        # applied by a separate Argo Application after this operator.
 
     # ---- emit helper ----------------------------------------------------
     def _emit(self, name, api_version, kind, manifest):
@@ -171,17 +170,6 @@ class ConductorStack(Chart):
             "metadata": {"name": "conductor-controller", "namespace": ns},
             "spec": {"maxUnavailable": 1, "selector": {"matchLabels": labels}},
         })
-
-    def _baseline(self, ns, cfg):
-        for name, spec in cfg.get("resourcePools", {}).items():
-            self._emit("pool-" + name, "conductor.projectinitiative.io/v1alpha1", "ResourcePool", {
-                "metadata": {"name": name, "namespace": ns}, "spec": spec,
-            })
-        for name, spec in cfg.get("managedWorkloads", {}).items():
-            self._emit("workload-" + name, "conductor.projectinitiative.io/v1alpha1", "ManagedWorkload", {
-                "metadata": {"name": name, "namespace": ns}, "spec": spec,
-            })
-
 
 def main():
     cfg = load_yaml(os.path.join(ROOT_DIR, "apps.yaml")) or {}
