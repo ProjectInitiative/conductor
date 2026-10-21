@@ -217,7 +217,8 @@ def main():
         print("Error: no clusters/*.yaml found", file=sys.stderr)
         sys.exit(1)
 
-    app = App(outdir=os.environ.get("MANIFEST_OUTPUT_DIR", ".direnv/manifests"))
+    outdir = os.environ.get("MANIFEST_OUTPUT_DIR") or os.environ.get("CDK8S_OUTDIR") or "dist"
+    app = App(outdir=outdir)
     for cluster_file in cluster_files:
         cluster = load_yaml(cluster_file) or {}
         for deploy in cluster.get("apps", []):
