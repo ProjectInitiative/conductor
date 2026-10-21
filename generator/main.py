@@ -87,14 +87,24 @@ class ConductorStack(Chart):
                  "resources": ["resourcepools", "managedworkloads", "workloadoverrides"],
                  "verbs": ["get", "list", "watch"]},
                 {"apiGroups": ["conductor.projectinitiative.io"],
-                 "resources": ["resourcepools/status", "managedworkloads/status", "workloadoverrides/status"],
+                 "resources": ["modeldownloads"],
+                 "verbs": ["get", "list", "watch"]},
+                {"apiGroups": ["conductor.projectinitiative.io"],
+                 "resources": ["resourcepools/status", "managedworkloads/status", "workloadoverrides/status", "modeldownloads/status"],
                  "verbs": ["get", "update", "patch"]},
+                {"apiGroups": ["conductor.projectinitiative.io"],
+                 "resources": ["modeldownloads/finalizers"],
+                 "verbs": ["update"]},
                 {"apiGroups": ["apps"], "resources": ["deployments", "replicasets"],
                  "verbs": ["get", "list", "watch"]},
                 {"apiGroups": ["apps"], "resources": ["deployments/scale"],
                  "verbs": ["get", "patch", "update"]},
                 {"apiGroups": [""], "resources": ["pods", "services"],
                  "verbs": ["get", "list", "watch"]},
+                {"apiGroups": ["batch"], "resources": ["jobs"],
+                 "verbs": ["get", "list", "watch", "create", "update", "patch", "delete"]},
+                {"apiGroups": [""], "resources": ["persistentvolumeclaims"],
+                 "verbs": ["get", "list", "watch", "create", "update", "patch", "delete"]},
                 {"apiGroups": ["discovery.k8s.io"], "resources": ["endpointslices"],
                  "verbs": ["get", "list", "watch"]},
                 {"apiGroups": [""], "resources": ["events"],
@@ -116,6 +126,16 @@ class ConductorStack(Chart):
             "metadata": {"name": "conductor-node-reader"},
             "subjects": [{"kind": "ServiceAccount", "name": "conductor", "namespace": ns}],
             "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": "conductor-node-reader"},
+        })
+        self._emit("conductor-downloader-reader", "rbac.authorization.k8s.io/v1", "ClusterRole", {
+            "metadata": {"name": "conductor-downloader-reader"},
+            "rules": [{"apiGroups": ["conductor.projectinitiative.io"],
+                       "resources": ["downloaders"], "verbs": ["get", "list", "watch"]}],
+        })
+        self._emit("conductor-downloader-reader-binding", "rbac.authorization.k8s.io/v1", "ClusterRoleBinding", {
+            "metadata": {"name": "conductor-downloader-reader"},
+            "subjects": [{"kind": "ServiceAccount", "name": "conductor", "namespace": ns}],
+            "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": "conductor-downloader-reader"},
         })
 
     # ---- Kubernetes-native controller ----------------------------------

@@ -1,0 +1,176 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: modeldownloads.conductor.projectinitiative.io
+spec:
+  group: conductor.projectinitiative.io
+  names:
+    kind: ModelDownload
+    listKind: ModelDownloadList
+    plural: modeldownloads
+    singular: modeldownload
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+            spec:
+              type: object
+              required:
+                - operation
+                - downloaderRef
+                - cache
+                - models
+                - rateLimit
+                - verification
+              properties:
+                operation:
+                  type: string
+                  enum:
+                    - Ensure
+                    - Delete
+                downloaderRef:
+                  type: string
+                cache:
+                  type: object
+                  required:
+                    - pvc
+                  properties:
+                    pvc:
+                      type: string
+                    nodeSelector:
+                      type: object
+                      additionalProperties:
+                        type: string
+                models:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - repository
+                      - revision
+                    properties:
+                      repository:
+                        type: string
+                      revision:
+                        type: string
+                      include:
+                        type: array
+                        items:
+                          type: string
+                rateLimit:
+                  type: object
+                  required:
+                    - bytesPerSecond
+                  properties:
+                    bytesPerSecond:
+                      type: integer
+                      format: int64
+                      minimum: 0
+                workers:
+                  type: object
+                  properties:
+                    fileWorkers:
+                      type: integer
+                      format: int32
+                      minimum: 1
+                    repositoryWorkers:
+                      type: integer
+                      format: int32
+                      minimum: 1
+                    deleteWorkers:
+                      type: integer
+                      format: int32
+                      minimum: 1
+                progressIntervalSeconds:
+                  type: integer
+                  format: int32
+                  minimum: 1
+                verification:
+                  type: object
+                  properties:
+                    required:
+                      type: boolean
+                    receiptPath:
+                      type: string
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  enum:
+                    - Pending
+                    - Running
+                    - Succeeded
+                    - Failed
+                    - Cancelled
+                jobName:
+                  type: string
+                observedGeneration:
+                  type: integer
+                  format: int64
+                  minimum: 0
+                filesCompleted:
+                  type: integer
+                  format: int64
+                  minimum: 0
+                filesTotal:
+                  type: integer
+                  format: int64
+                  minimum: 0
+                bytesPersisted:
+                  type: integer
+                  format: int64
+                  minimum: 0
+                instantaneousBytesPerSecond:
+                  type: integer
+                  format: int64
+                  minimum: 0
+                averageBytesPerSecond:
+                  type: integer
+                  format: int64
+                  minimum: 0
+                receiptPath:
+                  type: string
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - type
+                      - status
+                      - reason
+                      - message
+                      - lastTransitionTime
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                        enum:
+                          - "True"
+                          - "False"
+                          - Unknown
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                      observedGeneration:
+                        type: integer
+                        format: int64
+                        minimum: 0
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+      subresources:
+        status: {}
