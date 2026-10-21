@@ -195,6 +195,14 @@ class ConductorStack(Chart):
             self._emit("workload-" + name, "conductor.projectinitiative.io/v1alpha1", "ManagedWorkload", {
                 "metadata": {"name": name, "namespace": ns}, "spec": spec,
             })
+        for name, spec in cfg.get("downloaders", {}).items():
+            self._emit("downloader-" + name, "conductor.projectinitiative.io/v1alpha1", "DownloaderClass", {
+                "metadata": {"name": name}, "spec": spec,
+            })
+        for name, spec in cfg.get("modelDownloads", {}).items():
+            self._emit("model-download-" + name, "conductor.projectinitiative.io/v1alpha1", "ModelDownload", {
+                "metadata": {"name": name, "namespace": ns}, "spec": spec,
+            })
 
 
 def main():

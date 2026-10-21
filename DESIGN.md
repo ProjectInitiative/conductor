@@ -61,6 +61,23 @@ Arbitrary embedded Kubernetes manifests are deliberately excluded from
 v1alpha1. Generic recipes later reference typed drivers or versioned OCI bundles
 with explicit inventory and ownership semantics.
 
+### 2.2.1 ModelDownload and DownloaderClass
+
+`ModelDownload` is the typed cache-transfer driver. It accepts only pinned
+repository/revision entries, explicit Ensure/Delete intent, a PVC and optional
+node selector, worker counts, verification receipt path, and an aggregate
+`rateLimit.bytesPerSecond`. It creates exactly one owned Job and exposes its
+phase, progress, throughput, and receipt in status. The controller performs
+bounded create/observe/status actions; it never applies arbitrary pod or Job
+manifests.
+
+`DownloaderClass` is a cluster-scoped approved executor definition containing
+the immutable downloader image reference, pull policy, service account, and
+metrics port. This keeps image selection out of each request without making the
+operator a general image or manifest launcher. The first class wraps the
+existing rate-limited Python downloader; its shared token-bucket limiter remains
+the authority for aggregate throughput across concurrent file workers.
+
 ### 2.3 WorkloadOverride
 
 The only write surface for temporary CLI/web intent. It is separate from the
