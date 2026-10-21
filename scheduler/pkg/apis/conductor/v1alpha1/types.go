@@ -6,6 +6,7 @@
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -27,6 +28,8 @@ func addKnownTypes(s *runtime.Scheme) error {
 		&ResourcePool{}, &ResourcePoolList{},
 		&ManagedWorkload{}, &ManagedWorkloadList{},
 		&WorkloadOverride{}, &WorkloadOverrideList{},
+		&ModelDownload{}, &ModelDownloadList{},
+		&DownloaderClass{}, &DownloaderClassList{},
 	)
 	metav1.AddToGroupVersion(s, GroupVersion)
 	return nil
@@ -214,4 +217,130 @@ type WorkloadOverrideList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []WorkloadOverride `json:"items"`
+}
+
+// ModelDownloadOperation selects whether the downloader pulls or removes the
+// pinned models from the shared cache.
+type ModelDownloadOperation string
+
+const (
+	ModelDownloadEnsure ModelDownloadOperation = "Ensure"
+	ModelDownloadDelete ModelDownloadOperation = "Delete"
+)
+
+// ModelDownloadPhase is deliberately small: the Job is the source of truth for
+// progress, while this phase is the controller's bounded read model.
+type ModelDownloadPhase string
+
+const (
+	ModelDownloadPending   ModelDownloadPhase = "Pending"
+	ModelDownloadRunning   ModelDownloadPhase = "Running"
+	ModelDownloadSucceeded ModelDownloadPhase = "Succeeded"
+	ModelDownloadFailed    ModelDownloadPhase = "Failed"
+	ModelDownloadCancelled ModelDownloadPhase = "Cancelled"
+)
+
+type PinnedModel struct {
+	// +kubebuilder:validation:MinLength=1
+	Repository string `json:"repository"`
+	// +kubebuilder:validation:MinLength=1
+	Revision string   `json:"revision"`
+	Include  []string `json:"include,omitempty"`
+}
+
+type ModelDownloadRateLimit struct {
+	// +kubebuilder:validation:Minimum=0
+	BytesPerSecond int64 `json:"bytesPerSecond"`
+}
+
+type ModelDownloadWorkers struct {
+	// +kubebuilder:validation:Minimum=1
+	FileWorkers int32 `json:"fileWorkers,omitempty"`
+	// +kubebuilder:validation:Minimum=1
+	RepositoryWorkers int32 `json:"repositoryWorkers,omitempty"`
+	// +kubebuilder:validation:Minimum=1
+	DeleteWorkers int32 `json:"deleteWorkers,omitempty"`
+}
+
+type ModelDownloadVerification struct {
+	ReceiptPath string `json:"receiptPath,omitempty"`
+	Required    bool   `json:"required,omitempty"`
+}
+
+// ModelDownloadSpec contains only the typed downloader contract. It does not
+// accept arbitrary Pod or Job manifests.
+type ModelDownloadCache struct {
+	// +kubebuilder:validation:MinLength=1
+	PVC          string            `json:"pvc"`
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+}
+
+type ModelDownloadSpec struct {
+	// +kubebuilder:validation:Enum=Ensure;Delete
+	Operation     ModelDownloadOperation `json:"operation"`
+	DownloaderRef string                 `json:"downloaderRef"`
+	Cache         ModelDownloadCache     `json:"cache"`
+	Models        []PinnedModel          `json:"models"`
+	RateLimit     ModelDownloadRateLimit `json:"rateLimit"`
+	Workers       ModelDownloadWorkers   `json:"workers,omitempty"`
+	// +kubebuilder:validation:Minimum=1
+	ProgressIntervalSeconds int32                     `json:"progressIntervalSeconds,omitempty"`
+	Verification            ModelDownloadVerification `json:"verification"`
+}
+
+type ModelDownloadStatus struct {
+	// +kubebuilder:validation:Enum=Pending;Running;Succeeded;Failed;Cancelled
+	Phase                       ModelDownloadPhase `json:"phase,omitempty"`
+	JobName                     string             `json:"jobName,omitempty"`
+	ObservedGeneration          int64              `json:"observedGeneration,omitempty"`
+	FilesCompleted              int64              `json:"filesCompleted,omitempty"`
+	FilesTotal                  int64              `json:"filesTotal,omitempty"`
+	BytesPersisted              int64              `json:"bytesPersisted,omitempty"`
+	InstantaneousBytesPerSecond int64              `json:"instantaneousBytesPerSecond,omitempty"`
+	AverageBytesPerSecond       int64              `json:"averageBytesPerSecond,omitempty"`
+	ReceiptPath                 string             `json:"receiptPath,omitempty"`
+	Conditions                  []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+type ModelDownload struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+	Spec              ModelDownloadSpec   `json:"spec,omitempty"`
+	Status            ModelDownloadStatus `json:"status,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+type ModelDownloadList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []ModelDownload `json:"items"`
+}
+
+// DownloaderClass is cluster-scoped so namespaces can share a vetted
+// downloader image. ModelDownload references it by name.
+type DownloaderClassSpec struct {
+	// +kubebuilder:validation:MinLength=1
+	Image string `json:"image"`
+	// +kubebuilder:validation:Enum=Always;IfNotPresent;Never
+	// +kubebuilder:default=IfNotPresent
+	ImagePullPolicy    corev1.PullPolicy `json:"imagePullPolicy,omitempty"`
+	ServiceAccountName string            `json:"serviceAccountName,omitempty"`
+	// +kubebuilder:validation:Minimum=0
+	MetricsPort int32 `json:"metricsPort,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+type DownloaderClass struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+	Spec              DownloaderClassSpec `json:"spec,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+type DownloaderClassList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []DownloaderClass `json:"items"`
 }

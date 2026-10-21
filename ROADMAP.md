@@ -51,9 +51,14 @@ patches Deployments directly.
   residency transition is in progress.
 - Manual override continues to beat automatic demand.
 
-## Milestone 5 — generic permanent-temporary recipes
+## Milestone 5 — typed cache transfers and generic recipes
 
-Separate reusable **recipe** from instantiated **managed workload**.
+- `ModelDownload` and `DownloaderClass` provide typed, pinned cache transfers.
+- Conductor creates one owned downloader Job per request and reports phase,
+  receipt, persisted bytes, and throughput.
+- The approved downloader retains the shared token-bucket rate limiter and
+  bounded file/repository/delete workers; no per-request hardcoded container.
+- Separate reusable **recipe** from instantiated **managed workload**.
 
 - `WorkloadRecipe` references a versioned OCI artifact or typed driver config.
 - Inventory and owner references for operator-created children.

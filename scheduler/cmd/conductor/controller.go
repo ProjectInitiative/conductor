@@ -47,6 +47,11 @@ func runController() {
 		Recorder:  mgr.GetEventRecorderFor("conductor-controller"),
 	}
 	must(reconciler.SetupWithManager(mgr))
+	modelDownloads := &conductorcontroller.ModelDownloadReconciler{
+		Client: mgr.GetClient(),
+		Clock:  clock.RealClock{},
+	}
+	must(modelDownloads.SetupWithManager(mgr))
 	must(mgr.AddHealthzCheck("healthz", healthz.Ping))
 	must(mgr.AddReadyzCheck("readyz", healthz.Ping))
 

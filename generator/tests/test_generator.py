@@ -75,8 +75,16 @@ def test_rbac_is_scoped_for_native_reconciliation(tmp_path):
     assert any("pods" in rule["resources"] and rule["verbs"] == ["get", "list", "watch"] for rule in rules)
     assert not any("delete" in rule["verbs"] for rule in rules if "pods" in rule["resources"])
     assert any("endpointslices" in rule["resources"] for rule in rules)
+    model_download_rule = next(rule for rule in rules if rule["resources"] == ["modeldownloads"])
+    assert model_download_rule["verbs"] == ["get", "list", "watch"]
+    assert any("modeldownloads/status" in rule["resources"] and "patch" in rule["verbs"] for rule in rules)
+    assert any(rule["resources"] == ["modeldownloads/finalizers"] and rule["verbs"] == ["update"] for rule in rules)
+    assert any(rule["resources"] == ["jobs"] and "create" in rule["verbs"] and "delete" in rule["verbs"] for rule in rules)
+    assert any(rule["resources"] == ["persistentvolumeclaims"] and "create" in rule["verbs"] and "delete" in rule["verbs"] for rule in rules)
     node_role = by_kind(objs, "ClusterRole", "conductor-node-reader")
     assert node_role["rules"] == [{"apiGroups": [""], "resources": ["nodes"], "verbs": ["get", "list", "watch"]}]
+    downloader_role = by_kind(objs, "ClusterRole", "conductor-downloader-reader")
+    assert downloader_role["rules"] == [{"apiGroups": ["conductor.projectinitiative.io"], "resources": ["downloaders"], "verbs": ["get", "list", "watch"]}]
 
 
 def test_tensorfold_starts_observe_only(tmp_path):
@@ -97,6 +105,24 @@ def test_crds_have_status_subresources(tmp_path):
         "resourcepools.conductor.projectinitiative.io",
         "managedworkloads.conductor.projectinitiative.io",
         "workloadoverrides.conductor.projectinitiative.io",
+        "modeldownloads.conductor.projectinitiative.io",
+        "downloaders.conductor.projectinitiative.io",
     }
     for crd in crds:
         assert crd["spec"]["versions"][0]["subresources"] == {"status": {}}
+
+    model_download = by_kind(objs, "CustomResourceDefinition", "modeldownloads.conductor.projectinitiative.io")
+    model_version = model_download["spec"]["versions"][0]
+    assert model_download["spec"]["scope"] == "Namespaced"
+    model_spec = model_version["schema"]["openAPIV3Schema"]["properties"]["spec"]["properties"]
+    assert model_spec["operation"]["enum"] == ["Ensure", "Delete"]
+    assert model_spec["rateLimit"]["properties"]["bytesPerSecond"]["minimum"] == 0
+    assert model_spec["workers"]["properties"]["fileWorkers"]["minimum"] == 1
+    assert model_version["schema"]["openAPIV3Schema"]["type"] == "object"
+
+    downloader = by_kind(objs, "CustomResourceDefinition", "downloaders.conductor.projectinitiative.io")
+    downloader_version = downloader["spec"]["versions"][0]
+    assert downloader["spec"]["scope"] == "Cluster"
+    image_pull_policy = downloader_version["schema"]["openAPIV3Schema"]["properties"]["spec"]["properties"]["imagePullPolicy"]
+    assert image_pull_policy["enum"] == ["IfNotPresent", "Always", "Never"]
+    assert image_pull_policy["default"] == "IfNotPresent"
