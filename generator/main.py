@@ -15,7 +15,7 @@ import os
 import sys
 
 import yaml
-from cdk8s import App, Chart, ApiObject, JsonPatch
+from cdk8s import ApiObject, App, Chart, JsonPatch
 from constructs import Construct
 
 
@@ -36,8 +36,6 @@ class ConductorStack(Chart):
     def __init__(self, scope: Construct, cfg: dict, deploy: dict):
         namespace = deploy.get("namespace", "llm-test")
         image = deploy.get("image", "ghcr.io/projectinitiative/conductor:0.1.0")
-        profiles = cfg.get("modelProfiles", {})
-
         super().__init__(scope, namespace, disable_resource_name_hashes=True)
         print(f"Rendering Conductor stack in namespace {namespace}", file=sys.stderr)
 

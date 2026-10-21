@@ -327,6 +327,8 @@ type DownloaderClassSpec struct {
 	// +kubebuilder:default=IfNotPresent
 	ImagePullPolicy    corev1.PullPolicy `json:"imagePullPolicy,omitempty"`
 	ServiceAccountName string            `json:"serviceAccountName,omitempty"`
+	// +kubebuilder:validation:Minimum=0
+	MetricsPort int32 `json:"metricsPort,omitempty"`
 }
 
 // +kubebuilder:object:root=true

@@ -40,6 +40,10 @@ spec:
                   default: IfNotPresent
                 serviceAccountName:
                   type: string
+                metricsPort:
+                  type: integer
+                  format: int32
+                  minimum: 0
             status:
               type: object
       subresources:

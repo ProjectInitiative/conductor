@@ -99,6 +99,7 @@ func BuildDownloaderEnv(download *conductorv1alpha1.ModelDownload, class *conduc
 		interval = int32(modelDownloadProgressInterval / time.Second)
 	}
 	return []corev1.EnvVar{
+		{Name: "METRICS_PORT", Value: strconv.FormatInt(int64(metricsPort(class)), 10)},
 		{Name: "PULL_MODELS", Value: pull},
 		{Name: "DELETE_MODELS", Value: deleteModels},
 		{Name: "RATE", Value: strconv.FormatInt(download.Spec.RateLimit.BytesPerSecond, 10)},
@@ -168,6 +169,13 @@ func (r *ModelDownloadReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	return r.setDownloadStatus(ctx, &download, phase, &job)
 }
 
+func metricsPort(class *conductorv1alpha1.DownloaderClass) int32 {
+	if class.Spec.MetricsPort > 0 {
+		return class.Spec.MetricsPort
+	}
+	return 9105
+}
+
 func desiredModelDownloadJob(download *conductorv1alpha1.ModelDownload, class *conductorv1alpha1.DownloaderClass, env []corev1.EnvVar) batchv1.Job {
 	pullPolicy := class.Spec.ImagePullPolicy
 	if pullPolicy == "" {
@@ -187,7 +195,7 @@ func desiredModelDownloadJob(download *conductorv1alpha1.ModelDownload, class *c
 					NodeSelector:       download.Spec.Cache.NodeSelector,
 					ServiceAccountName: class.Spec.ServiceAccountName,
 					Volumes:            []corev1.Volume{{Name: "model-cache", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: download.Spec.Cache.PVC}}}},
-					Containers:         []corev1.Container{{Name: "downloader", Image: class.Spec.Image, ImagePullPolicy: pullPolicy, Env: env, VolumeMounts: []corev1.VolumeMount{{Name: "model-cache", MountPath: modelDownloadMountPath}}}},
+					Containers:         []corev1.Container{{Name: "downloader", Image: class.Spec.Image, ImagePullPolicy: pullPolicy, Env: env, Ports: []corev1.ContainerPort{{Name: "metrics", ContainerPort: metricsPort(class), Protocol: corev1.ProtocolTCP}}, VolumeMounts: []corev1.VolumeMount{{Name: "model-cache", MountPath: modelDownloadMountPath}}}},
 				},
 			},
 		},
