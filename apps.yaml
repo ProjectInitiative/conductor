@@ -3,6 +3,12 @@
 # The operator references existing homelab-owned Deployments. It does not own
 # their pod templates. Temporary CLI/web intent belongs in WorkloadOverride CRs,
 # never in this GitOps baseline.
+downloaders:
+  huggingface-cache-v1:
+    image: registry.taildeab2.ts.net/homelab/model-cache-downloader:v1@sha256:dc82548802ddfd033f77ca44397ab9a937ae4dac556c00efd84ad2603925fc33
+    imagePullPolicy: IfNotPresent
+    metricsPort: 9105
+
 resourcePools:
   dgx-spark:
     # Observe is the safe migration default. Promote to Manage only after the
