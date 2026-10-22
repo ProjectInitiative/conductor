@@ -138,6 +138,16 @@ class ConductorStack(Chart):
             "subjects": [{"kind": "ServiceAccount", "name": "conductor", "namespace": ns}],
             "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": "conductor-downloader-reader"},
         })
+        self._emit("conductor-preparer-reader", "rbac.authorization.k8s.io/v1", "ClusterRole", {
+            "metadata": {"name": "conductor-preparer-reader"},
+            "rules": [{"apiGroups": ["conductor.projectinitiative.io"],
+                       "resources": ["preparerclasses"], "verbs": ["get", "list", "watch"]}],
+        })
+        self._emit("conductor-preparer-reader-binding", "rbac.authorization.k8s.io/v1", "ClusterRoleBinding", {
+            "metadata": {"name": "conductor-preparer-reader"},
+            "subjects": [{"kind": "ServiceAccount", "name": "conductor", "namespace": ns}],
+            "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": "conductor-preparer-reader"},
+        })
 
     # ---- Kubernetes-native controller ----------------------------------
     def _controller(self, ns, image):
