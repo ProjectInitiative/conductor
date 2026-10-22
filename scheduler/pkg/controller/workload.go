@@ -42,6 +42,8 @@ const (
 	PhaseStartingHead       = "StartingHead"
 	PhaseQualifying         = "Qualifying"
 
+	defaultStartupGracePeriod = 30 * time.Minute
+
 	ConditionReady       = "Ready"
 	ConditionProgressing = "Progressing"
 	ConditionDegraded    = "Degraded"
@@ -249,6 +251,36 @@ func assess(members []observedMember, desired conductorv1alpha1.DesiredState) (b
 	return true, "Observed"
 }
 
+func (r *WorkloadReconciler) startupInProgress(workload *conductorv1alpha1.ManagedWorkload, members []observedMember) bool {
+	grace := workload.Spec.Driver.DeploymentSet.StartupGracePeriod.Duration
+	if grace <= 0 {
+		grace = defaultStartupGracePeriod
+	}
+	now := r.Clock.Now()
+	for _, member := range members {
+		want := member.Spec.Replicas
+		if want == 0 {
+			want = 1
+		}
+		if member.Deployment.Name == "" || ptrValue(member.Deployment.Spec.Replicas) != want || member.Deployment.Status.AvailableReplicas >= want {
+			continue
+		}
+		for _, pod := range member.Pods {
+			if pod.DeletionTimestamp != nil || pod.Status.Phase == corev1.PodFailed || pod.Status.Phase == corev1.PodSucceeded {
+				continue
+			}
+			started := pod.CreationTimestamp.Time
+			if pod.Status.StartTime != nil && pod.Status.StartTime.After(started) {
+				started = pod.Status.StartTime.Time
+			}
+			if now.Sub(started) >= 0 && now.Sub(started) < grace {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (r *WorkloadReconciler) nodeSafety(ctx context.Context, members []observedMember) (bool, string, error) {
 	for _, member := range members {
 		for _, pod := range member.Pods {
@@ -297,6 +329,11 @@ func (r *WorkloadReconciler) reconcileResident(ctx context.Context, workload *co
 		clearCondition(&workload.Status.Conditions, ConditionBlocked, "Healthy", workload.Generation)
 		clearCondition(&workload.Status.Conditions, ConditionDegraded, "Healthy", workload.Generation)
 		return r.updateStatus(ctx, workload, PhaseReady, ctrl.Result{RequeueAfter: 30 * time.Second})
+	}
+	if (phase == "" || phase == PhaseReady || phase == PhaseObserving || phase == PhaseBlocked) && r.startupInProgress(workload, members) {
+		setCondition(&workload.Status.Conditions, metav1.Condition{Type: ConditionProgressing, Status: metav1.ConditionTrue, Reason: "StartupInProgress", ObservedGeneration: workload.Generation})
+		setCondition(&workload.Status.Conditions, metav1.Condition{Type: ConditionReady, Status: metav1.ConditionFalse, Reason: "StartupInProgress", ObservedGeneration: workload.Generation})
+		return r.updateStatus(ctx, workload, PhaseObserving, ctrl.Result{RequeueAfter: 15 * time.Second})
 	}
 	if phase == "" || phase == PhaseReady || phase == PhaseObserving || phase == PhaseBlocked {
 		workload.Status.Operation = &conductorv1alpha1.OperationStatus{ID: fmt.Sprintf("%s-%d", workload.UID, r.Clock.Now().UnixNano()), Phase: PhaseStoppingHead, Reason: reason, StartedAt: metav1.NewTime(r.Clock.Now()), UpdatedAt: metav1.NewTime(r.Clock.Now())}

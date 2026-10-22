@@ -38,6 +38,7 @@ managedWorkloads:
       type: DeploymentSet
       deploymentSet:
         recoveryPolicy: RecreateTogether
+        startupGracePeriod: 30m
         members:
           - name: tensorfold-v14-worker
             role: worker

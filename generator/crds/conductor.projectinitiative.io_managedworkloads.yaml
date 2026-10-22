@@ -73,6 +73,8 @@ spec:
                         type: array
                       recoveryPolicy:
                         type: string
+                      startupGracePeriod:
+                        type: string
                     required:
                     - members
                     type: object
