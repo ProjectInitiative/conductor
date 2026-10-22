@@ -11,4 +11,4 @@ apps:
     targetRevision: HEAD
     # CI publishes this tag as one OCI index for linux/amd64 + linux/arm64.
     # Pin the resulting digest before changing ResourcePool to Manage.
-    image: ghcr.io/projectinitiative/conductor:0.2.0
+    image: ghcr.io/projectinitiative/conductor:0.2.1

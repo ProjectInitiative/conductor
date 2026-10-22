@@ -38,7 +38,6 @@ jobs:
           images: ghcr.io/projectinitiative/conductor
           tags: |
             type=semver,pattern={{version}}
-            type=raw,value=0.2.0,enable=${{ github.ref == 'refs/heads/main' }}
             type=sha,prefix=sha-
       - uses: docker/build-push-action@v6
         with:
