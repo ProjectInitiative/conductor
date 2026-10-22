@@ -146,6 +146,40 @@ func TestOldFailedPodDoesNotPoisonAvailableGeneration(t *testing.T) {
 	}
 }
 
+func TestColdStartDoesNotTriggerRecovery(t *testing.T) {
+	pool, workload, worker, head := workloadObjects(conductorv1alpha1.ManagementManage)
+	now := time.Unix(100, 0)
+	workload.Spec.Driver.DeploymentSet.StartupGracePeriod = metav1.Duration{Duration: 10 * time.Minute}
+	head.Status.AvailableReplicas = 0
+	head.Status.ReadyReplicas = 0
+	pod := corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "head-starting", Namespace: "llm-test", CreationTimestamp: metav1.NewTime(now.Add(-time.Minute)), Labels: map[string]string{"app": "head"}}, Status: corev1.PodStatus{Phase: corev1.PodRunning, StartTime: ptrTime(now.Add(-time.Minute))}}
+	scheme := testScheme(t)
+	client := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(workload).WithObjects(pool, workload, worker, head, &pod).Build()
+	r := &WorkloadReconciler{Client: client, APIReader: client, Clock: clocktesting.NewFakeClock(now)}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "llm-test", Name: "tensorfold"}}); err != nil {
+		t.Fatal(err)
+	}
+	var got conductorv1alpha1.ManagedWorkload
+	if err := client.Get(context.Background(), types.NamespacedName{Namespace: "llm-test", Name: "tensorfold"}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Phase != PhaseObserving || got.Status.Conditions[0].Reason != "StartupInProgress" {
+		t.Fatalf("cold start triggered recovery: %+v", got.Status)
+	}
+	var gotHead appsv1.Deployment
+	if err := client.Get(context.Background(), types.NamespacedName{Namespace: "llm-test", Name: "head"}, &gotHead); err != nil {
+		t.Fatal(err)
+	}
+	if *gotHead.Spec.Replicas != 1 {
+		t.Fatalf("cold start scaled head to %d", *gotHead.Spec.Replicas)
+	}
+}
+
+func ptrTime(t time.Time) *metav1.Time {
+	v := metav1.NewTime(t)
+	return &v
+}
+
 func TestOverridePrecedenceAndExpiry(t *testing.T) {
 	_, workload, _, _ := workloadObjects(conductorv1alpha1.ManagementObserve)
 	now := time.Unix(100, 0)

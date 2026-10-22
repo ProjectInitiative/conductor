@@ -123,6 +123,10 @@ type WorkloadDriver struct {
 type DeploymentSetSpec struct {
 	Members        []DeploymentMember `json:"members"`
 	RecoveryPolicy string             `json:"recoveryPolicy,omitempty"`
+	// StartupGracePeriod prevents normal cold starts from being treated as
+	// failed resident workloads while their Deployments are still becoming
+	// Available. Zero uses the controller default.
+	StartupGracePeriod metav1.Duration `json:"startupGracePeriod,omitempty"`
 }
 
 type DeploymentMember struct {
@@ -368,26 +372,26 @@ type PackagePreparationSpec struct {
 	PreparerRef string `json:"preparerRef"`
 	// Optional ModelDownload gate in the same namespace. The preparation Job is
 	// created only after this ModelDownload reports phase Succeeded.
-	ModelDownloadRef string              `json:"modelDownloadRef,omitempty"`
-	Cache            ModelDownloadCache  `json:"cache"`
+	ModelDownloadRef string             `json:"modelDownloadRef,omitempty"`
+	Cache            ModelDownloadCache `json:"cache"`
 	// Args are passed verbatim as the container's exec args (never a shell).
 	// +kubebuilder:validation:MinItems=1
-	Args       []string `json:"args,omitempty"`
+	Args []string `json:"args,omitempty"`
 	// OutputPath is the PVC-relative directory the prepared package is written
 	// to. It is recorded in status and injected as INPUT_PATH/OUTPUT_PATH env.
 	// +kubebuilder:validation:MinLength=1
 	OutputPath string `json:"outputPath"`
 	// ReceiptPath is the PVC-relative verification receipt location.
 	// +kubebuilder:validation:MinLength=1
-	ReceiptPath string                         `json:"receiptPath"`
-	Resources   *corev1.ResourceRequirements   `json:"resources,omitempty"`
+	ReceiptPath string                       `json:"receiptPath"`
+	Resources   *corev1.ResourceRequirements `json:"resources,omitempty"`
 }
 
 type PackagePreparationStatus struct {
 	// +kubebuilder:validation:Enum=Pending;WaitingForDownload;Running;Succeeded;Failed
 	Phase              PackagePreparationPhase `json:"phase,omitempty"`
 	JobName            string                  `json:"jobName,omitempty"`
-	ObservedGeneration int64                  `json:"observedGeneration,omitempty"`
+	ObservedGeneration int64                   `json:"observedGeneration,omitempty"`
 	OutputPath         string                  `json:"outputPath,omitempty"`
 	ReceiptPath        string                  `json:"receiptPath,omitempty"`
 	Conditions         []metav1.Condition      `json:"conditions,omitempty"`
