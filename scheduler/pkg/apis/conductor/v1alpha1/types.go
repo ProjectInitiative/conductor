@@ -30,6 +30,8 @@ func addKnownTypes(s *runtime.Scheme) error {
 		&WorkloadOverride{}, &WorkloadOverrideList{},
 		&ModelDownload{}, &ModelDownloadList{},
 		&DownloaderClass{}, &DownloaderClassList{},
+		&PackagePreparation{}, &PackagePreparationList{},
+		&PreparerClass{}, &PreparerClassList{},
 	)
 	metav1.AddToGroupVersion(s, GroupVersion)
 	return nil
@@ -343,4 +345,91 @@ type DownloaderClassList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []DownloaderClass `json:"items"`
+}
+
+// PackagePreparationPhase is the bounded read model for the one preparation
+// Job. WaitingForDownload means the referenced ModelDownload has not reached
+// Succeeded yet.
+type PackagePreparationPhase string
+
+const (
+	PackagePreparationPending            PackagePreparationPhase = "Pending"
+	PackagePreparationWaitingForDownload PackagePreparationPhase = "WaitingForDownload"
+	PackagePreparationRunning            PackagePreparationPhase = "Running"
+	PackagePreparationSucceeded          PackagePreparationPhase = "Succeeded"
+	PackagePreparationFailed             PackagePreparationPhase = "Failed"
+)
+
+// PackagePreparationSpec contains only the typed preparation contract. It
+// mounts a shared PVC, waits for an optional ModelDownload gate, and runs the
+// PreparerClass image with direct exec args (no shell, no arbitrary manifest).
+type PackagePreparationSpec struct {
+	// +kubebuilder:validation:MinLength=1
+	PreparerRef string `json:"preparerRef"`
+	// Optional ModelDownload gate in the same namespace. The preparation Job is
+	// created only after this ModelDownload reports phase Succeeded.
+	ModelDownloadRef string              `json:"modelDownloadRef,omitempty"`
+	Cache            ModelDownloadCache  `json:"cache"`
+	// Args are passed verbatim as the container's exec args (never a shell).
+	// +kubebuilder:validation:MinItems=1
+	Args       []string `json:"args,omitempty"`
+	// OutputPath is the PVC-relative directory the prepared package is written
+	// to. It is recorded in status and injected as INPUT_PATH/OUTPUT_PATH env.
+	// +kubebuilder:validation:MinLength=1
+	OutputPath string `json:"outputPath"`
+	// ReceiptPath is the PVC-relative verification receipt location.
+	// +kubebuilder:validation:MinLength=1
+	ReceiptPath string                         `json:"receiptPath"`
+	Resources   *corev1.ResourceRequirements   `json:"resources,omitempty"`
+}
+
+type PackagePreparationStatus struct {
+	// +kubebuilder:validation:Enum=Pending;WaitingForDownload;Running;Succeeded;Failed
+	Phase              PackagePreparationPhase `json:"phase,omitempty"`
+	JobName            string                  `json:"jobName,omitempty"`
+	ObservedGeneration int64                  `json:"observedGeneration,omitempty"`
+	OutputPath         string                  `json:"outputPath,omitempty"`
+	ReceiptPath        string                  `json:"receiptPath,omitempty"`
+	Conditions         []metav1.Condition      `json:"conditions,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+type PackagePreparation struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+	Spec              PackagePreparationSpec   `json:"spec,omitempty"`
+	Status            PackagePreparationStatus `json:"status,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+type PackagePreparationList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []PackagePreparation `json:"items"`
+}
+
+// PreparerClass is cluster-scoped so namespaces can share a vetted preparation
+// image. PackagePreparation references it by name.
+type PreparerClassSpec struct {
+	// +kubebuilder:validation:MinLength=1
+	Image string `json:"image"`
+	// +kubebuilder:validation:Enum=Always;IfNotPresent;Never
+	// +kubebuilder:default=IfNotPresent
+	ImagePullPolicy    corev1.PullPolicy `json:"imagePullPolicy,omitempty"`
+	ServiceAccountName string            `json:"serviceAccountName,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+type PreparerClass struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+	Spec              PreparerClassSpec `json:"spec,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+type PreparerClassList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []PreparerClass `json:"items"`
 }

@@ -107,6 +107,8 @@ def test_crds_have_status_subresources(tmp_path):
         "workloadoverrides.conductor.projectinitiative.io",
         "modeldownloads.conductor.projectinitiative.io",
         "downloaders.conductor.projectinitiative.io",
+        "packagepreparations.conductor.projectinitiative.io",
+        "preparerclasses.conductor.projectinitiative.io",
     }
     for crd in crds:
         assert crd["spec"]["versions"][0]["subresources"] == {"status": {}}
