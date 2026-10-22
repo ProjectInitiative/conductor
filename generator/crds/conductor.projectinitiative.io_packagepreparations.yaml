@@ -1,0 +1,99 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: packagepreparations.conductor.projectinitiative.io
+spec:
+  group: conductor.projectinitiative.io
+  names:
+    kind: PackagePreparation
+    listKind: PackagePreparationList
+    plural: packagepreparations
+    singular: packagepreparation
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+            spec:
+              type: object
+              required:
+                - preparerRef
+                - cache
+                - outputPath
+                - receiptPath
+              properties:
+                preparerRef:
+                  type: string
+                  minLength: 1
+                modelDownloadRef:
+                  type: string
+                cache:
+                  type: object
+                  required:
+                    - pvc
+                  properties:
+                    pvc:
+                      type: string
+                      minLength: 1
+                    nodeSelector:
+                      type: object
+                      additionalProperties:
+                        type: string
+                args:
+                  type: array
+                  items:
+                    type: string
+                outputPath:
+                  type: string
+                  minLength: 1
+                receiptPath:
+                  type: string
+                  minLength: 1
+                resources:
+                  type: object
+                  properties:
+                    requests:
+                      type: object
+                      additionalProperties:
+                        x-kubernetes-preserve-unknown-fields: true
+                    limits:
+                      type: object
+                      additionalProperties:
+                        x-kubernetes-preserve-unknown-fields: true
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  enum:
+                    - Pending
+                    - WaitingForDownload
+                    - Running
+                    - Succeeded
+                    - Failed
+                jobName:
+                  type: string
+                observedGeneration:
+                  type: integer
+                  format: int64
+                outputPath:
+                  type: string
+                receiptPath:
+                  type: string
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+      subresources:
+        status: {}

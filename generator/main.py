@@ -88,7 +88,10 @@ class ConductorStack(Chart):
                  "resources": ["modeldownloads"],
                  "verbs": ["get", "list", "watch"]},
                 {"apiGroups": ["conductor.projectinitiative.io"],
-                 "resources": ["resourcepools/status", "managedworkloads/status", "workloadoverrides/status", "modeldownloads/status"],
+                 "resources": ["packagepreparations"],
+                 "verbs": ["get", "list", "watch"]},
+                {"apiGroups": ["conductor.projectinitiative.io"],
+                 "resources": ["resourcepools/status", "managedworkloads/status", "workloadoverrides/status", "modeldownloads/status", "packagepreparations/status"],
                  "verbs": ["get", "update", "patch"]},
                 {"apiGroups": ["conductor.projectinitiative.io"],
                  "resources": ["modeldownloads/finalizers"],
@@ -201,6 +204,14 @@ class ConductorStack(Chart):
             })
         for name, spec in cfg.get("modelDownloads", {}).items():
             self._emit("model-download-" + name, "conductor.projectinitiative.io/v1alpha1", "ModelDownload", {
+                "metadata": {"name": name, "namespace": ns}, "spec": spec,
+            })
+        for name, spec in cfg.get("preparerClasses", {}).items():
+            self._emit("preparer-" + name, "conductor.projectinitiative.io/v1alpha1", "PreparerClass", {
+                "metadata": {"name": name}, "spec": spec,
+            })
+        for name, spec in cfg.get("packagePreparations", {}).items():
+            self._emit("package-preparation-" + name, "conductor.projectinitiative.io/v1alpha1", "PackagePreparation", {
                 "metadata": {"name": name, "namespace": ns}, "spec": spec,
             })
 

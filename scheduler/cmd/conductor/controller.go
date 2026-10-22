@@ -55,6 +55,11 @@ func runController() {
 		Clock:  clock.RealClock{},
 	}
 	must(modelDownloads.SetupWithManager(mgr))
+	packagePreparations := &conductorcontroller.PackagePreparationReconciler{
+		Client: mgr.GetClient(),
+		Clock:  clock.RealClock{},
+	}
+	must(packagePreparations.SetupWithManager(mgr))
 	must(mgr.AddHealthzCheck("healthz", healthz.Ping))
 	must(mgr.AddReadyzCheck("readyz", healthz.Ping))
 
