@@ -11,4 +11,5 @@ apps:
     targetRevision: HEAD
     # CI publishes this tag as one OCI index for linux/amd64 + linux/arm64.
     # Pin the resulting digest before changing ResourcePool to Manage.
-    image: ghcr.io/projectinitiative/conductor:0.3.0@sha256:4fc92c0354a97f5e4e3421d6bcddce7abb25b27eface31a909083b333a685ac1
+    # d61efef includes priority arbitration and fail-closed fencing evidence.
+    image: ghcr.io/projectinitiative/conductor:sha-d61efef@sha256:04f30f5492e6f04ee3d769df071a032a6447fd44f40b2d8dc56e3e52c230d28b
