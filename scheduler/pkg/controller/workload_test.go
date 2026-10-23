@@ -180,6 +180,75 @@ func ptrTime(t time.Time) *metav1.Time {
 	return &v
 }
 
+func TestPrioritySuppressesLowerPriorityResident(t *testing.T) {
+	pool, workload, _, _ := workloadObjects(conductorv1alpha1.ManagementObserve)
+	workload.Spec.Priority = 50
+	urgent := workload.DeepCopy()
+	urgent.Name = "urgent"
+	urgent.UID = "uid-urgent"
+	urgent.Spec.Priority = 0
+	scheme := testScheme(t)
+	client := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(pool, workload, urgent).Build()
+	r := &WorkloadReconciler{Client: client, Clock: clocktesting.NewFakeClock(time.Unix(100, 0))}
+	desired, source, err := r.effectiveIntent(context.Background(), workload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if desired != conductorv1alpha1.DesiredStandby || source != "Priority/urgent" {
+		t.Fatalf("desired=%s source=%s", desired, source)
+	}
+}
+
+type testFencer struct{ result FenceResult }
+
+func (f testFencer) EnsureFenced(context.Context, string) (FenceResult, error) { return f.result, nil }
+
+func TestHigherPriorityWorkloadWaitsForLowerPriorityRelease(t *testing.T) {
+	pool, lower, worker, head := workloadObjects(conductorv1alpha1.ManagementObserve)
+	lower.Spec.Priority = 50
+	higher := lower.DeepCopy()
+	higher.Name = "urgent"
+	higher.UID = "uid-urgent"
+	higher.Spec.Priority = 0
+	higher.Spec.Driver.DeploymentSet.Members = []conductorv1alpha1.DeploymentMember{{Name: "urgent-worker", Role: "worker", Replicas: 1}}
+	urgentWorker := worker.DeepCopy()
+	urgentWorker.Name = "urgent-worker"
+	scheme := testScheme(t)
+	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pool, lower, higher, worker, head, urgentWorker).Build()
+	r := &WorkloadReconciler{Client: client, Clock: clocktesting.NewFakeClock(time.Unix(100, 0))}
+	pending, err := r.priorityPreemptionPending(context.Background(), higher)
+	if err != nil || pending != "tensorfold" {
+		t.Fatalf("pending=%q err=%v", pending, err)
+	}
+	worker.Spec.Replicas = i32(0)
+	head.Spec.Replicas = i32(0)
+	if err := client.Update(context.Background(), worker); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Update(context.Background(), head); err != nil {
+		t.Fatal(err)
+	}
+	pending, err = r.priorityPreemptionPending(context.Background(), higher)
+	if err != nil || pending != "" {
+		t.Fatalf("workload did not release capacity: pending=%q err=%v", pending, err)
+	}
+}
+
+func TestFencingRequiresVerifiedUnexpiredReceipt(t *testing.T) {
+	now := time.Unix(100, 0)
+	pool := &conductorv1alpha1.ResourcePool{Spec: conductorv1alpha1.ResourcePoolSpec{Policy: conductorv1alpha1.PoolPolicy{}}}
+	base := &WorkloadReconciler{Clock: clocktesting.NewFakeClock(now)}
+	blocked, _, err := base.fenceOrBlock(context.Background(), pool, "octant")
+	if err != nil || !blocked {
+		t.Fatalf("missing fencer was not blocked: blocked=%v err=%v", blocked, err)
+	}
+	base.Fencer = testFencer{result: FenceResult{NodeName: "octant", Verified: true, Evidence: "bmc-123", ExpiresAt: now.Add(time.Hour)}}
+	blocked, reason, err := base.fenceOrBlock(context.Background(), pool, "octant")
+	if err != nil || blocked || reason != "fenced:bmc-123" {
+		t.Fatalf("valid fencing receipt was rejected: blocked=%v reason=%q err=%v", blocked, reason, err)
+	}
+}
+
 func TestOverridePrecedenceAndExpiry(t *testing.T) {
 	_, workload, _, _ := workloadObjects(conductorv1alpha1.ManagementObserve)
 	now := time.Unix(100, 0)

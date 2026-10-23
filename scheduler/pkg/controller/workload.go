@@ -59,11 +59,30 @@ type WorkloadReconciler struct {
 	Clock         clock.Clock
 	Recorder      record.EventRecorder
 	HealthChecker HealthChecker
+	Fencer        Fencer
 }
 
 // HealthChecker makes direct service qualification injectable in unit tests.
 type HealthChecker interface {
 	Check(context.Context, string) error
+}
+
+// FenceResult is evidence returned by an idempotent fencing provider. A
+// provider must not report Verified until it has independently established
+// that the node cannot continue running workload processes.
+type FenceResult struct {
+	NodeName  string
+	Verified  bool
+	Evidence  string
+	ExpiresAt time.Time
+}
+
+// Fencer is deliberately injected rather than implemented with kubectl or a
+// cloud-specific API. EnsureFenced must be idempotent and independently verify
+// power isolation, so a transient NotReady observation cannot cause destructive
+// cleanup or split-brain relocation.
+type Fencer interface {
+	EnsureFenced(context.Context, string) (FenceResult, error)
 }
 
 type HTTPHealthChecker struct{ Client *http.Client }
@@ -132,7 +151,7 @@ func (r *WorkloadReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return r.updateStatus(ctx, &workload, PhaseObserving, ctrl.Result{RequeueAfter: 30 * time.Second})
 	}
 
-	blocked, reason, err := r.nodeSafety(ctx, members)
+	blocked, reason, err := r.nodeSafety(ctx, &pool, members)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -227,7 +246,50 @@ func (r *WorkloadReconciler) effectiveIntent(ctx context.Context, workload *cond
 			return desired, "Override/" + override.Name, nil
 		}
 	}
+	if desired != conductorv1alpha1.DesiredResident {
+		return desired, "Baseline", nil
+	}
+	winner, err := r.priorityWinner(ctx, workload.Namespace, workload.Spec.PoolRef, overrides, now)
+	if err != nil {
+		return desired, "Baseline", err
+	}
+	if winner != "" && winner != workload.Name {
+		return conductorv1alpha1.DesiredStandby, "Priority/" + winner, nil
+	}
 	return desired, "Baseline", nil
+}
+
+// priorityWinner returns the resident baseline workload that should own a
+// pool. Lower values are more urgent; names provide deterministic tie-breaking.
+// An active Pin override selects its target before priority comparison. This
+// is automatic arbitration only: explicit safety blocks still win.
+func (r *WorkloadReconciler) priorityWinner(ctx context.Context, namespace, poolRef string, overrides conductorv1alpha1.WorkloadOverrideList, now time.Time) (string, error) {
+	var workloads conductorv1alpha1.ManagedWorkloadList
+	if err := r.List(ctx, &workloads, client.InNamespace(namespace)); err != nil {
+		return "", err
+	}
+	pinned := ""
+	for _, override := range overrides.Items {
+		if override.Spec.PoolRef == poolRef && override.Spec.Mode == "Pin" && override.Spec.WorkloadRef != "" && (override.Spec.ExpiresAt == nil || override.Spec.ExpiresAt.After(now)) {
+			pinned = override.Spec.WorkloadRef
+			break
+		}
+	}
+	winner := ""
+	winnerPriority := int32(0)
+	for _, candidate := range workloads.Items {
+		if candidate.Spec.PoolRef != poolRef || candidate.Spec.DesiredState != conductorv1alpha1.DesiredResident || candidate.Spec.Paused {
+			continue
+		}
+		if pinned != "" && candidate.Name != pinned {
+			continue
+		}
+		if winner == "" || candidate.Spec.Priority < winnerPriority || (candidate.Spec.Priority == winnerPriority && candidate.Name < winner) {
+			winner = candidate.Name
+			winnerPriority = candidate.Spec.Priority
+		}
+	}
+	return winner, nil
 }
 
 func assess(members []observedMember, desired conductorv1alpha1.DesiredState) (bool, string) {
@@ -281,7 +343,7 @@ func (r *WorkloadReconciler) startupInProgress(workload *conductorv1alpha1.Manag
 	return false
 }
 
-func (r *WorkloadReconciler) nodeSafety(ctx context.Context, members []observedMember) (bool, string, error) {
+func (r *WorkloadReconciler) nodeSafety(ctx context.Context, pool *conductorv1alpha1.ResourcePool, members []observedMember) (bool, string, error) {
 	for _, member := range members {
 		for _, pod := range member.Pods {
 			if pod.Spec.NodeName == "" || pod.DeletionTimestamp != nil || pod.Status.Phase == corev1.PodFailed || pod.Status.Phase == corev1.PodSucceeded {
@@ -290,7 +352,7 @@ func (r *WorkloadReconciler) nodeSafety(ctx context.Context, members []observedM
 			var node corev1.Node
 			if err := r.APIReader.Get(ctx, types.NamespacedName{Name: pod.Spec.NodeName}, &node); err != nil {
 				if apierrors.IsNotFound(err) {
-					return true, fmt.Sprintf("node %s is absent; fencing proof required", pod.Spec.NodeName), nil
+					return r.fenceOrBlock(ctx, pool, pod.Spec.NodeName)
 				}
 				return false, "", err
 			}
@@ -302,14 +364,78 @@ func (r *WorkloadReconciler) nodeSafety(ctx context.Context, members []observedM
 				}
 			}
 			if !ready {
-				return true, fmt.Sprintf("node %s is not Ready; refusing split-brain recovery without fencing", node.Name), nil
+				return r.fenceOrBlock(ctx, pool, node.Name)
 			}
 		}
 	}
 	return false, "", nil
 }
 
+func (r *WorkloadReconciler) priorityPreemptionPending(ctx context.Context, workload *conductorv1alpha1.ManagedWorkload) (string, error) {
+	var overrides conductorv1alpha1.WorkloadOverrideList
+	if err := r.List(ctx, &overrides, client.InNamespace(workload.Namespace)); err != nil {
+		return "", err
+	}
+	winner, err := r.priorityWinner(ctx, workload.Namespace, workload.Spec.PoolRef, overrides, r.Clock.Now())
+	if err != nil || winner != workload.Name {
+		return "", err
+	}
+	var workloads conductorv1alpha1.ManagedWorkloadList
+	if err := r.List(ctx, &workloads, client.InNamespace(workload.Namespace)); err != nil {
+		return "", err
+	}
+	for _, candidate := range workloads.Items {
+		if candidate.Name == workload.Name || candidate.Spec.PoolRef != workload.Spec.PoolRef || candidate.Spec.DesiredState != conductorv1alpha1.DesiredResident || candidate.Spec.Paused {
+			continue
+		}
+		if candidate.Spec.Priority < workload.Spec.Priority || (candidate.Spec.Priority == workload.Spec.Priority && candidate.Name < workload.Name) {
+			continue
+		}
+		if candidate.Spec.Driver.DeploymentSet == nil {
+			continue
+		}
+		for _, member := range candidate.Spec.Driver.DeploymentSet.Members {
+			var deployment appsv1.Deployment
+			if err := r.Get(ctx, types.NamespacedName{Namespace: candidate.Namespace, Name: member.Name}, &deployment); err != nil {
+				if apierrors.IsNotFound(err) {
+					continue
+				}
+				return "", err
+			}
+			if ptrValue(deployment.Spec.Replicas) > 0 {
+				return candidate.Name, nil
+			}
+		}
+	}
+	return "", nil
+}
+
+func (r *WorkloadReconciler) fenceOrBlock(ctx context.Context, pool *conductorv1alpha1.ResourcePool, nodeName string) (bool, string, error) {
+	require := pool.Spec.Policy.RequireFencing == nil || *pool.Spec.Policy.RequireFencing
+	if !require {
+		return false, fmt.Sprintf("node %s is not Ready; fencing policy disabled", nodeName), nil
+	}
+	if r.Fencer == nil {
+		return true, fmt.Sprintf("node %s is not Ready; fencing proof required", nodeName), nil
+	}
+	result, err := r.Fencer.EnsureFenced(ctx, nodeName)
+	if err != nil {
+		return true, fmt.Sprintf("node %s fencing failed: %v", nodeName, err), nil
+	}
+	now := r.Clock.Now()
+	if !result.Verified || result.NodeName != nodeName || result.Evidence == "" || result.ExpiresAt.IsZero() || !result.ExpiresAt.After(now) {
+		return true, fmt.Sprintf("node %s fencing receipt is not independently verified or has expired", nodeName), nil
+	}
+	return false, "fenced:" + result.Evidence, nil
+}
+
 func (r *WorkloadReconciler) reconcileResident(ctx context.Context, workload *conductorv1alpha1.ManagedWorkload, members []observedMember) (ctrl.Result, error) {
+	if pending, err := r.priorityPreemptionPending(ctx, workload); err != nil {
+		return ctrl.Result{}, err
+	} else if pending != "" {
+		setCondition(&workload.Status.Conditions, metav1.Condition{Type: ConditionProgressing, Status: metav1.ConditionTrue, Reason: "WaitingForPriorityPreemption", Message: "waiting for lower-priority workload " + pending + " to release pool capacity", ObservedGeneration: workload.Generation})
+		return r.updateStatus(ctx, workload, PhaseObserving, ctrl.Result{RequeueAfter: 5 * time.Second})
+	}
 	phase := workload.Status.Phase
 	healthy, reason := assess(members, conductorv1alpha1.DesiredResident)
 	if (phase == "" || phase == PhaseReady || phase == PhaseObserving) && healthy {
@@ -715,6 +841,7 @@ func (r *WorkloadReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	})
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&conductorv1alpha1.ManagedWorkload{}).
+		Watches(&conductorv1alpha1.ManagedWorkload{}, handler.EnqueueRequestsFromMapFunc(r.mapAll)).
 		Watches(&appsv1.Deployment{}, handler.EnqueueRequestsFromMapFunc(r.mapDeployment)).
 		Watches(&corev1.Pod{}, mapNamespace).
 		Watches(&discoveryv1.EndpointSlice{}, mapNamespace).
