@@ -9,6 +9,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -143,6 +144,47 @@ func TestOldFailedPodDoesNotPoisonAvailableGeneration(t *testing.T) {
 	healthy, reason := assess([]observedMember{{Spec: conductorv1alpha1.DeploymentMember{Name: "worker", Replicas: 1}, Deployment: *worker, Pods: []corev1.Pod{old}}}, conductorv1alpha1.DesiredResident)
 	if !healthy {
 		t.Fatalf("old failed pod poisoned healthy generation: %s", reason)
+	}
+}
+
+func TestConductorCleansTerminalPodAfterHealthyReplacement(t *testing.T) {
+	pool, workload, worker, head := workloadObjects(conductorv1alpha1.ManagementManage)
+	failed := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "worker-admission-failed", Namespace: "llm-test", Labels: map[string]string{"app": "worker"}}, Status: corev1.PodStatus{Phase: corev1.PodFailed, Reason: "UnexpectedAdmissionError"}}
+	scheme := testScheme(t)
+	client := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(workload).WithObjects(pool, workload, worker, head, failed).Build()
+	r := &WorkloadReconciler{Client: client, APIReader: client, Clock: clocktesting.NewFakeClock(time.Unix(100, 0))}
+	members, err := r.observeMembers(context.Background(), workload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleaned, err := r.cleanupTerminalPods(context.Background(), workload, members)
+	if err != nil || !cleaned {
+		t.Fatalf("cleaned=%v err=%v", cleaned, err)
+	}
+	var got corev1.Pod
+	if err := client.Get(context.Background(), types.NamespacedName{Namespace: "llm-test", Name: failed.Name}, &got); !apierrors.IsNotFound(err) {
+		t.Fatalf("terminal pod still exists: err=%v", err)
+	}
+}
+
+func TestConductorRetainsTerminalPodUntilHealthyReplacement(t *testing.T) {
+	pool, workload, worker, head := workloadObjects(conductorv1alpha1.ManagementManage)
+	worker.Status.AvailableReplicas = 0
+	failed := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "worker-admission-failed", Namespace: "llm-test", Labels: map[string]string{"app": "worker"}}, Status: corev1.PodStatus{Phase: corev1.PodFailed}}
+	scheme := testScheme(t)
+	client := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(workload).WithObjects(pool, workload, worker, head, failed).Build()
+	r := &WorkloadReconciler{Client: client, APIReader: client, Clock: clocktesting.NewFakeClock(time.Unix(100, 0))}
+	members, err := r.observeMembers(context.Background(), workload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleaned, err := r.cleanupTerminalPods(context.Background(), workload, members)
+	if err != nil || cleaned {
+		t.Fatalf("cleaned=%v err=%v", cleaned, err)
+	}
+	var got corev1.Pod
+	if err := client.Get(context.Background(), types.NamespacedName{Namespace: "llm-test", Name: failed.Name}, &got); err != nil {
+		t.Fatalf("terminal pod unexpectedly removed: %v", err)
 	}
 }
 

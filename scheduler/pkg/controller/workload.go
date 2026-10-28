@@ -430,6 +430,11 @@ func (r *WorkloadReconciler) fenceOrBlock(ctx context.Context, pool *conductorv1
 }
 
 func (r *WorkloadReconciler) reconcileResident(ctx context.Context, workload *conductorv1alpha1.ManagedWorkload, members []observedMember) (ctrl.Result, error) {
+	if cleaned, err := r.cleanupTerminalPods(ctx, workload, members); err != nil {
+		return ctrl.Result{}, err
+	} else if cleaned {
+		return ctrl.Result{Requeue: true}, nil
+	}
 	if pending, err := r.priorityPreemptionPending(ctx, workload); err != nil {
 		return ctrl.Result{}, err
 	} else if pending != "" {
@@ -572,6 +577,35 @@ func (r *WorkloadReconciler) reconcileResident(ctx context.Context, workload *co
 	default:
 		return r.failStatus(ctx, workload, PhaseBlocked, "UnknownPhase", phase, true)
 	}
+}
+
+// cleanupTerminalPods removes one terminal child pod after its Deployment has
+// a healthy replacement. Admission failures such as unhealthy GPU/RDMA devices
+// are useful while a workload is recovering, but stale terminal pods should not
+// accumulate after the current generation is available. Limit this to one
+// deletion per reconciliation so cleanup remains bounded and observable.
+func (r *WorkloadReconciler) cleanupTerminalPods(ctx context.Context, workload *conductorv1alpha1.ManagedWorkload, members []observedMember) (bool, error) {
+	for _, member := range members {
+		want := member.Spec.Replicas
+		if want == 0 {
+			want = 1
+		}
+		if member.Deployment.Name == "" || member.Deployment.Status.AvailableReplicas < want {
+			continue
+		}
+		for i := range member.Pods {
+			pod := &member.Pods[i]
+			if pod.DeletionTimestamp != nil || (pod.Status.Phase != corev1.PodFailed && pod.Status.Phase != corev1.PodSucceeded) {
+				continue
+			}
+			if err := r.Delete(ctx, pod); err != nil && !apierrors.IsNotFound(err) {
+				return false, err
+			}
+			r.event(workload, corev1.EventTypeNormal, "TerminalPodCleaned", fmt.Sprintf("deleted terminal pod %s/%s after member %s became available", pod.Namespace, pod.Name, member.Spec.Name))
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (r *WorkloadReconciler) reconcileStandby(ctx context.Context, workload *conductorv1alpha1.ManagedWorkload, members []observedMember) (ctrl.Result, error) {
