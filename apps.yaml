@@ -3,60 +3,14 @@
 # The operator references existing homelab-owned Deployments. It does not own
 # their pod templates. Temporary CLI/web intent belongs in WorkloadOverride CRs,
 # never in this GitOps baseline.
+#
+# ResourcePool/ManagedWorkload policy is intentionally NOT declared here: it is
+# homelab-owned (conductor-workloads Application) so Manage/Observe and workload
+# membership changes do not require a Conductor code or image revision. Declaring
+# the same objects in both Applications produced Argo SharedResourceWarnings with
+# diverging specs (Observe/100 baseline vs Manage/0 homelab policy).
 downloaders:
   huggingface-cache-v1:
     image: registry.taildeab2.ts.net/homelab/model-cache-downloader:v1@sha256:dc82548802ddfd033f77ca44397ab9a937ae4dac556c00efd84ad2603925fc33
     imagePullPolicy: IfNotPresent
     metricsPort: 9105
-
-resourcePools:
-  dgx-spark:
-    # Observe is the safe migration default. Promote to Manage only after the
-    # controller's status/events match the live lane during failure injection.
-    managementMode: Observe
-    capacity:
-      slots: 1
-    nodeSelector:
-      ai-compute: "true"
-      nvidia.com/gpu.present: "true"
-    routing:
-      serviceName: dgx-spark-backend
-      selector:
-        serving.homelab.io/alias: dgx-spark
-    policy:
-      notReadyGracePeriod: 2m
-      requireFencing: true
-      defaultMinDwell: 15m
-      cooldown: 5m
-
-managedWorkloads:
-  tensorfold-v14:
-    poolRef: dgx-spark
-    desiredState: Resident
-    priority: 100
-    driver:
-      type: DeploymentSet
-      deploymentSet:
-        recoveryPolicy: RecreateTogether
-        startupGracePeriod: 30m
-        members:
-          - name: tensorfold-v14-worker
-            role: worker
-            startOrder: 10
-            stopOrder: 20
-            replicas: 1
-            readyGate: ContainersRunning
-          - name: tensorfold-v14-head
-            role: head
-            startOrder: 20
-            stopOrder: 10
-            replicas: 1
-            readyGate: DeploymentAvailable
-    qualification:
-      serviceName: dgx-spark-backend
-      path: /health
-      timeout: 45m
-    routing:
-      serviceName: dgx-spark-backend
-      selector:
-        serving.homelab.io/alias: dgx-spark
