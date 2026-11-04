@@ -14,6 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	clocktesting "k8s.io/utils/clock/testing"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
@@ -29,6 +30,38 @@ func testScheme(t *testing.T) *runtime.Scheme {
 }
 
 func i32(v int32) *int32 { return &v }
+
+type racingStatusClient struct {
+	client.Client
+	raced bool
+}
+
+func (c *racingStatusClient) Status() client.SubResourceWriter {
+	return &racingStatusWriter{SubResourceWriter: c.Client.Status(), owner: c}
+}
+
+type racingStatusWriter struct {
+	client.SubResourceWriter
+	owner *racingStatusClient
+}
+
+func (w *racingStatusWriter) Update(ctx context.Context, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+	if !w.owner.raced {
+		w.owner.raced = true
+		var latest conductorv1alpha1.ManagedWorkload
+		if err := w.owner.Client.Get(ctx, types.NamespacedName{Namespace: obj.GetNamespace(), Name: obj.GetName()}, &latest); err != nil {
+			return err
+		}
+		if latest.Annotations == nil {
+			latest.Annotations = map[string]string{}
+		}
+		latest.Annotations["test.concurrent-update"] = "true"
+		if err := w.owner.Client.Update(ctx, &latest); err != nil {
+			return err
+		}
+	}
+	return w.SubResourceWriter.Update(ctx, obj, opts...)
+}
 
 func workloadObjects(mode conductorv1alpha1.ManagementMode) (*conductorv1alpha1.ResourcePool, *conductorv1alpha1.ManagedWorkload, *appsv1.Deployment, *appsv1.Deployment) {
 	pool := &conductorv1alpha1.ResourcePool{
@@ -55,6 +88,31 @@ func workloadObjects(mode conductorv1alpha1.ManagementMode) (*conductorv1alpha1.
 		}
 	}
 	return pool, workload, mkDep("worker"), mkDep("head")
+}
+
+func TestUpdateStatusRetriesConcurrentObjectModification(t *testing.T) {
+	_, workload, _, _ := workloadObjects(conductorv1alpha1.ManagementManage)
+	scheme := testScheme(t)
+	base := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(workload).WithObjects(workload).Build()
+	racing := &racingStatusClient{Client: base}
+	r := &WorkloadReconciler{Client: racing, APIReader: racing}
+	result, err := r.updateStatus(context.Background(), workload, PhaseStartingHead, ctrl.Result{Requeue: true})
+	if err != nil {
+		t.Fatalf("updateStatus failed to retry conflict: %v", err)
+	}
+	if !result.Requeue || !racing.raced {
+		t.Fatalf("result=%+v conflictInjected=%v", result, racing.raced)
+	}
+	var got conductorv1alpha1.ManagedWorkload
+	if err := base.Get(context.Background(), types.NamespacedName{Namespace: workload.Namespace, Name: workload.Name}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Phase != PhaseStartingHead {
+		t.Fatalf("phase=%q, want %q", got.Status.Phase, PhaseStartingHead)
+	}
+	if got.Annotations["test.concurrent-update"] != "true" {
+		t.Fatalf("concurrent metadata update was lost: %#v", got.Annotations)
+	}
 }
 
 func TestObserveModeNeverMutatesDeployments(t *testing.T) {

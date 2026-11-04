@@ -702,15 +702,31 @@ func (r *WorkloadReconciler) failStatus(ctx context.Context, workload *conductor
 
 func (r *WorkloadReconciler) updateStatus(ctx context.Context, workload *conductorv1alpha1.ManagedWorkload, phase string, result ctrl.Result) (ctrl.Result, error) {
 	workload.Status.Phase = phase
-	var latest conductorv1alpha1.ManagedWorkload
-	if err := r.APIReader.Get(ctx, types.NamespacedName{Namespace: workload.Namespace, Name: workload.Name}, &latest); err != nil {
-		return ctrl.Result{}, err
+	desiredStatus := workload.Status
+	var err error
+	for attempt := 0; attempt < 5; attempt++ {
+		var latest conductorv1alpha1.ManagedWorkload
+		if err = r.APIReader.Get(ctx, types.NamespacedName{Namespace: workload.Namespace, Name: workload.Name}, &latest); err != nil {
+			break
+		}
+		if equality.Semantic.DeepEqual(latest.Status, desiredStatus) {
+			err = nil
+			break
+		}
+		latest.Status = desiredStatus
+		err = r.Status().Update(ctx, &latest)
+		if err == nil || !apierrors.IsConflict(err) || attempt == 4 {
+			break
+		}
+		timer := time.NewTimer(time.Duration(1<<attempt) * 50 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctrl.Result{}, ctx.Err()
+		case <-timer.C:
+		}
 	}
-	if equality.Semantic.DeepEqual(latest.Status, workload.Status) {
-		return result, nil
-	}
-	latest.Status = workload.Status
-	if err := r.Status().Update(ctx, &latest); err != nil {
+	if err != nil {
 		return ctrl.Result{}, err
 	}
 	return result, nil
