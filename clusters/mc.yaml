@@ -9,6 +9,6 @@ apps:
     namespace: llm-test
     repoURL: https://github.com/projectinitiative/conductor.git
     targetRevision: HEAD
-    # Immutable multi-arch OCI index built from main after honoring the
-    # ContainersRunning startup gate. Pin the index, not a platform leaf.
-    image: ghcr.io/projectinitiative/conductor:sha-9bee331@sha256:e490a79c441784ee1b4a267052acf5bbac48b4258129d084ab5134f05256ac5f
+    # Immutable multi-arch OCI index with ContainersRunning and status-conflict
+    # retry fixes. Pin the index, not a platform leaf.
+    image: ghcr.io/projectinitiative/conductor:sha-fe7c0e8@sha256:995a856a53d60a7f3e640efb4b810456cb79b2350e6a543d73f245d98f11cca0
