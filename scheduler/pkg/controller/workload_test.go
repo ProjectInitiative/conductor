@@ -118,6 +118,33 @@ func TestInvalidManagementModeFailsClosed(t *testing.T) {
 	}
 }
 
+func TestContainersRunningGateAdvancesBeforeDeploymentAvailable(t *testing.T) {
+	pool, workload, worker, head := workloadObjects(conductorv1alpha1.ManagementManage)
+	worker.Status.AvailableReplicas = 0
+	worker.Status.ReadyReplicas = 0
+	workload.Spec.Driver.DeploymentSet.Members[0].ReadyGate = "ContainersRunning"
+	workload.Status.Phase = PhaseStartingWorkers
+	workload.Status.Operation = &conductorv1alpha1.OperationStatus{Phase: PhaseStartingWorkers}
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "worker-starting", Namespace: "llm-test", Labels: map[string]string{"app": "worker"}},
+		Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "rank"}}},
+		Status:     corev1.PodStatus{Phase: corev1.PodRunning, ContainerStatuses: []corev1.ContainerStatus{{Name: "rank", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}}}},
+	}
+	scheme := testScheme(t)
+	client := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(workload).WithObjects(pool, workload, worker, head, pod).Build()
+	r := &WorkloadReconciler{Client: client, APIReader: client, Clock: clocktesting.NewFakeClock(time.Unix(100, 0))}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "llm-test", Name: "tensorfold"}}); err != nil {
+		t.Fatal(err)
+	}
+	var got conductorv1alpha1.ManagedWorkload
+	if err := client.Get(context.Background(), types.NamespacedName{Namespace: "llm-test", Name: "tensorfold"}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Phase != PhaseStartingHead {
+		t.Fatalf("ContainersRunning gate did not release head startup: phase=%q", got.Status.Phase)
+	}
+}
+
 func TestStartingWorkersWaitsForAlreadyScaledUnreadyWorker(t *testing.T) {
 	pool, workload, worker, head := workloadObjects(conductorv1alpha1.ManagementManage)
 	worker.Status.AvailableReplicas = 0

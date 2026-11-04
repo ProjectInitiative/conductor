@@ -757,8 +757,29 @@ func memberReady(m observedMember) bool {
 	if want == 0 {
 		want = 1
 	}
-	return ptrValue(m.Deployment.Spec.Replicas) == want &&
-		m.Deployment.Status.ObservedGeneration >= m.Deployment.Generation &&
+	if ptrValue(m.Deployment.Spec.Replicas) != want {
+		return false
+	}
+	if m.Spec.ReadyGate == "ContainersRunning" {
+		running := int32(0)
+		for _, pod := range m.Pods {
+			if pod.DeletionTimestamp != nil || pod.Status.Phase != corev1.PodRunning || len(pod.Status.ContainerStatuses) == 0 || len(pod.Status.ContainerStatuses) < len(pod.Spec.Containers) {
+				continue
+			}
+			allRunning := true
+			for _, status := range pod.Status.ContainerStatuses {
+				if status.State.Running == nil {
+					allRunning = false
+					break
+				}
+			}
+			if allRunning {
+				running++
+			}
+		}
+		return running >= want
+	}
+	return m.Deployment.Status.ObservedGeneration >= m.Deployment.Generation &&
 		m.Deployment.Status.UpdatedReplicas >= want &&
 		m.Deployment.Status.AvailableReplicas >= want
 }
