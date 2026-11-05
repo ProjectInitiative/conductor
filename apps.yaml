@@ -29,34 +29,4 @@ resourcePools:
       defaultMinDwell: 15m
       cooldown: 5m
 
-managedWorkloads:
-  tensorfold-v14:
-    poolRef: dgx-spark
-    desiredState: Resident
-    priority: 100
-    driver:
-      type: DeploymentSet
-      deploymentSet:
-        recoveryPolicy: RecreateTogether
-        startupGracePeriod: 30m
-        members:
-          - name: tensorfold-v14-worker
-            role: worker
-            startOrder: 10
-            stopOrder: 20
-            replicas: 1
-            readyGate: ContainersRunning
-          - name: tensorfold-v14-head
-            role: head
-            startOrder: 20
-            stopOrder: 10
-            replicas: 1
-            readyGate: DeploymentAvailable
-    qualification:
-      serviceName: dgx-spark-backend
-      path: /health
-      timeout: 45m
-    routing:
-      serviceName: dgx-spark-backend
-      selector:
-        serving.homelab.io/alias: dgx-spark
+managedWorkloads: {}
