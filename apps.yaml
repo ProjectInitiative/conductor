@@ -9,24 +9,13 @@ downloaders:
     imagePullPolicy: IfNotPresent
     metricsPort: 9105
 
-resourcePools:
-  dgx-spark:
-    # Observe is the safe migration default. Promote to Manage only after the
-    # controller's status/events match the live lane during failure injection.
-    managementMode: Observe
-    capacity:
-      slots: 1
-    nodeSelector:
-      ai-compute: "true"
-      nvidia.com/gpu.present: "true"
-    routing:
-      serviceName: dgx-spark-backend
-      selector:
-        serving.homelab.io/alias: dgx-spark
-    policy:
-      notReadyGracePeriod: 2m
-      requireFencing: true
-      defaultMinDwell: 15m
-      cooldown: 5m
+# resourcePools: intentionally empty. The dgx-spark pool (and all workload
+# intent) is owned by the homelab repo (llm-test/conductor-workloads, synced
+# by the argocd-mc/conductor-workloads Application). Declaring it here too
+# caused a dual-ownership fight: this pinned render kept re-applying
+# managementMode: Observe (and previously desiredState: Resident on
+# tensorfold-v14), pinning Conductor to observe-only and flip-flopping
+# intents (2026-11-12 incident). Keep workloads + pools OUT of this file.
+resourcePools: {}
 
 managedWorkloads: {}

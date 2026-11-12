@@ -36,13 +36,17 @@ def test_renders_operator_control_plane_only(tmp_path):
     objs = run_generator(tmp_path)
     kinds = {obj["kind"] for obj in objs}
     assert "CustomResourceDefinition" in kinds
-    assert "ResourcePool" in kinds
-    assert "ManagedWorkload" in kinds
     assert "Deployment" in kinds
     assert "ServiceAccount" in kinds
     assert "Role" in kinds and "RoleBinding" in kinds
     assert "ClusterRole" in kinds and "ClusterRoleBinding" in kinds
     assert "PodDisruptionBudget" in kinds
+
+    # Pools and workloads are homelab-owned (argocd-mc/conductor-workloads).
+    # This repo ships ONLY the control plane; declaring them here caused the
+    # 2026-11-12 dual-ownership incident (Observe pin + Resident flip-flop).
+    assert by_kind(objs, "ResourcePool") is None
+    assert by_kind(objs, "ManagedWorkload") is None
 
     # Legacy scheduler/router/Fission/model resources are deliberately absent.
     assert "Environment" not in kinds
@@ -87,15 +91,11 @@ def test_rbac_is_scoped_for_native_reconciliation(tmp_path):
     assert downloader_role["rules"] == [{"apiGroups": ["conductor.projectinitiative.io"], "resources": ["downloaders"], "verbs": ["get", "list", "watch"]}]
 
 
-def test_tensorfold_starts_observe_only(tmp_path):
+def test_no_workload_or_pool_intent_in_gitops_baseline(tmp_path):
+    """Intent (pools, desiredState) lives in homelab; this repo never declares it."""
     objs = run_generator(tmp_path)
-    pool = by_kind(objs, "ResourcePool", "dgx-spark")
-    workload = by_kind(objs, "ManagedWorkload", "tensorfold-v14")
-    assert pool["spec"]["managementMode"] == "Observe"
-    assert pool["spec"]["policy"]["requireFencing"] is True
-    members = workload["spec"]["driver"]["deploymentSet"]["members"]
-    assert [member["name"] for member in members] == ["tensorfold-v14-worker", "tensorfold-v14-head"]
-    assert workload["spec"]["driver"]["deploymentSet"]["recoveryPolicy"] == "RecreateTogether"
+    assert by_kind(objs, "ResourcePool", "dgx-spark") is None
+    assert by_kind(objs, "ManagedWorkload", "tensorfold-v14") is None
 
 
 def test_crds_have_status_subresources(tmp_path):
