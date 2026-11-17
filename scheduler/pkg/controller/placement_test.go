@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"k8s.io/apimachinery/pkg/api/resource"
 	"context"
 	"testing"
 	"time"
@@ -71,7 +72,7 @@ func TestChooseAdjacentPairFirstReadyEdge(t *testing.T) {
 		*mkRingNode("chronometer", "2", true),
 		*mkRingNode("sextant", "3", true),
 	}
-	pair := chooseAdjacentPair(nodes, DefaultRingLabel)
+	pair := chooseAdjacentPair(nodes, DefaultRingLabel, nil)
 	if pair == nil {
 		t.Fatal("pair=nil, want astrolabe/octant")
 	}
@@ -91,7 +92,7 @@ func TestChooseAdjacentPairSkipsUnreadyAndWraps(t *testing.T) {
 		*mkRingNode("chronometer", "2", true),
 		*mkRingNode("sextant", "3", true),
 	}
-	pair := chooseAdjacentPair(nodes, DefaultRingLabel)
+	pair := chooseAdjacentPair(nodes, DefaultRingLabel, nil)
 	if pair == nil {
 		t.Fatal("pair=nil, want octant/chronometer")
 	}
@@ -102,14 +103,14 @@ func TestChooseAdjacentPairSkipsUnreadyAndWraps(t *testing.T) {
 
 func TestChooseAdjacentPairAllUnreadyOrTooSmall(t *testing.T) {
 	unready := []corev1.Node{*mkRingNode("a", "0", false), *mkRingNode("b", "1", false)}
-	if pair := chooseAdjacentPair(unready, DefaultRingLabel); pair != nil {
+	if pair := chooseAdjacentPair(unready, DefaultRingLabel, nil); pair != nil {
 		t.Fatalf("pair=%+v, want nil when all unready", pair)
 	}
 	solo := []corev1.Node{*mkRingNode("a", "0", true)}
-	if pair := chooseAdjacentPair(solo, DefaultRingLabel); pair != nil {
+	if pair := chooseAdjacentPair(solo, DefaultRingLabel, nil); pair != nil {
 		t.Fatalf("pair=%+v, want nil for single-node ring", pair)
 	}
-	if pair := chooseAdjacentPair(nil, DefaultRingLabel); pair != nil {
+	if pair := chooseAdjacentPair(nil, DefaultRingLabel, nil); pair != nil {
 		t.Fatalf("pair=%+v, want nil for empty ring", pair)
 	}
 }
@@ -262,11 +263,73 @@ func TestChooseAdjacentPairSkipsCordonedNode(t *testing.T) {
 	unschedulable := nodes[1]
 	unschedulable.Spec.Unschedulable = true
 	nodes[1] = unschedulable
-	pair := chooseAdjacentPair(nodes, DefaultRingLabel)
+	pair := chooseAdjacentPair(nodes, DefaultRingLabel, nil)
 	if pair == nil {
 		t.Fatal("pair=nil, want chronometer/sextant")
 	}
 	if pair.Worker.Name != "chronometer" || pair.Head.Name != "sextant" {
 		t.Fatalf("pair=%+v", pair)
 	}
+}
+func TestChooseAdjacentPairSkipsOccupiedNodes(t *testing.T) {
+	nodes := []corev1.Node{
+		*mkRingNode("astrolabe", "0", true),
+		*mkRingNode("octant", "1", true),
+		*mkRingNode("chronometer", "2", true),
+		*mkRingNode("sextant", "3", true),
+	}
+	// astrolabe and octant host foreign GPU pods: the astrolabe->octant edge
+	// is out even though both are Ready; chron(2)->sext(3) is next.
+	occupied := map[string]bool{"astrolabe": true, "octant": true}
+	pair := chooseAdjacentPair(nodes, DefaultRingLabel, occupied)
+	if pair == nil {
+		t.Fatal("pair=nil, want chronometer/sextant")
+	}
+	if pair.Worker.Name != "chronometer" || pair.Head.Name != "sextant" {
+		t.Fatalf("pair=%+v, want worker=chronometer head=sextant", pair)
+	}
+}
+
+func TestChooseAdjacentPairOccupiedFallsBackToNil(t *testing.T) {
+	nodes := []corev1.Node{
+		*mkRingNode("a", "0", true),
+		*mkRingNode("b", "1", true),
+	}
+	// Both nodes of the only edge are occupied: no pairable edge, caller
+	// places freely instead of fighting over the GPUs.
+	if pair := chooseAdjacentPair(nodes, DefaultRingLabel, map[string]bool{"a": true, "b": true}); pair != nil {
+		t.Fatalf("pair=%+v, want nil when every edge is occupied", pair)
+	}
+}
+
+func TestReconcilePlacementRoutesAroundForeignGPUPod(t *testing.T) {
+	r, _, _, _ := placementHarness(t, PlacementModeBestRoute, nil)
+	gpuPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "foreign-lane-worker", Namespace: "llm-test", Labels: map[string]string{"app": "foreign-lane-worker"}},
+		Spec: corev1.PodSpec{
+			NodeName: "octant",
+			Containers: []corev1.Container{{
+				Name: "c", Image: "busybox",
+				Resources: corev1.ResourceRequirements{Limits: corev1.ResourceList{"nvidia.com/gpu": resource.MustParse("1")}},
+			}},
+		},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning},
+	}
+	if err := r.Create(context.Background(), gpuPod); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "llm-test", Name: "tensorfold"}}); err != nil {
+		t.Fatal(err)
+	}
+	var gotW, gotH appsv1.Deployment
+	_ = r.Get(context.Background(), types.NamespacedName{Namespace: "llm-test", Name: "worker"}, &gotW)
+	_ = r.Get(context.Background(), types.NamespacedName{Namespace: "llm-test", Name: "head"}, &gotH)
+	if gotW.Spec.Template.Spec.NodeSelector["kubernetes.io/hostname"] != "chronometer" {
+		t.Fatalf("worker selector=%v, want chronometer (octant occupied)", gotW.Spec.Template.Spec.NodeSelector)
+	}
+	if gotH.Spec.Template.Spec.NodeSelector["kubernetes.io/hostname"] != "sextant" {
+		t.Fatalf("head selector=%v, want sextant", gotH.Spec.Template.Spec.NodeSelector)
+	}
+	// Own members' pods must not occupy: same pod under this workload's app
+	// label changes nothing.
 }

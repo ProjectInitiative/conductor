@@ -92,11 +92,14 @@ func ringFromNodes(nodes []corev1.Node, ringLabel string) []ringNode {
 }
 
 // chooseAdjacentPair returns the first adjacent ring pair whose two nodes are
-// both Ready, walking the ring from position 0 (deterministic). It returns
-// nil when no edge is fully ready or the ring has fewer than two members —
-// the caller then places freely, which routed RoCE serves on non-adjacent
-// pairs.
-func chooseAdjacentPair(nodes []corev1.Node, ringLabel string) *adjacentPair {
+// both Ready and not occupied, walking the ring from position 0
+// (deterministic). Occupied nodes host a foreign GPU workload (another
+// resident lane, a classifier): pairing with one would fight over the node's
+// single GPU, so they stay in the ring — which keeps wrap edges correct when
+// nodes are down — but are not pairable. It returns nil when no edge is
+// placeable or the ring has fewer than two members — the caller then places
+// freely, which routed RoCE serves on non-adjacent pairs.
+func chooseAdjacentPair(nodes []corev1.Node, ringLabel string, occupied map[string]bool) *adjacentPair {
 	ring := ringFromNodes(nodes, ringLabel)
 	if len(ring) < 2 {
 		return nil
@@ -104,9 +107,13 @@ func chooseAdjacentPair(nodes []corev1.Node, ringLabel string) *adjacentPair {
 	for i := 0; i < len(ring); i++ {
 		worker := ring[i]
 		head := ring[(i+1)%len(ring)]
-		if worker.Ready && head.Ready {
-			return &adjacentPair{Worker: worker, Head: head}
+		if !worker.Ready || !head.Ready {
+			continue
 		}
+		if occupied[worker.Name] || occupied[head.Name] {
+			continue
+		}
+		return &adjacentPair{Worker: worker, Head: head}
 	}
 	return nil
 }

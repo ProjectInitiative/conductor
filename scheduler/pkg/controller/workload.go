@@ -658,8 +658,12 @@ func (r *WorkloadReconciler) reconcilePlacement(ctx context.Context, workload *c
 		return ctrl.Result{}, err
 	}
 	mode := placementMode(workload)
+	occupied, err := r.gpuOccupancy(ctx, workload, members)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
 	status := &conductorv1alpha1.PlacementStatus{Mode: "free"}
-	pair := chooseAdjacentPair(nodes.Items, effectiveRingLabel(workload))
+	pair := chooseAdjacentPair(nodes.Items, effectiveRingLabel(workload), occupied)
 	switch {
 	case mode == PlacementModeAny:
 		// Never pin, even when an adjacent pair exists: the operator asked
@@ -681,7 +685,11 @@ func (r *WorkloadReconciler) reconcilePlacement(ctx context.Context, workload *c
 		if err := r.pinPlacement(ctx, &head.Deployment, pair.Head.Name); err != nil {
 			return ctrl.Result{}, err
 		}
-		r.event(workload, corev1.EventTypeNormal, "PlacementChosen", fmt.Sprintf("ring-adjacent pair: worker=%s head=%s", pair.Worker.Name, pair.Head.Name))
+		msg := fmt.Sprintf("ring-adjacent pair: worker=%s head=%s", pair.Worker.Name, pair.Head.Name)
+		if len(occupied) > 0 {
+			msg += fmt.Sprintf("; skipped GPU-occupied nodes: %v", sortedKeys(occupied))
+		}
+		r.event(workload, corev1.EventTypeNormal, "PlacementChosen", msg)
 	case mode == PlacementModeBestRoute:
 		// No adjacent pair is Ready: unpin and let the scheduler decide.
 		// Routed RoCE serves a non-adjacent pair, so this is never an
@@ -700,6 +708,60 @@ func (r *WorkloadReconciler) reconcilePlacement(ctx context.Context, workload *c
 	}
 	workload.Status.Placement = status
 	return r.advance(ctx, workload, PhaseStartingWorkers, "")
+}
+
+// gpuOccupancy maps node names that host a foreign pod requesting an NVIDIA
+// GPU. Own members are excluded: their pods may still be draining during
+// re-placement, and Placing runs only after WaitingAllGone for the workload
+// itself. A pending pod has no node yet and cannot occupy anything. Lane rank
+// pods carry label app=<member deployment name>, so matching on that keeps
+// the exclusion cheap and dependency-free.
+func (r *WorkloadReconciler) gpuOccupancy(ctx context.Context, workload *conductorv1alpha1.ManagedWorkload, members []observedMember) (map[string]bool, error) {
+	own := map[string]bool{}
+	for i := range members {
+		own[members[i].Deployment.Name] = true
+	}
+	pods := &corev1.PodList{}
+	if err := r.Client.List(ctx, pods, client.InNamespace(workload.Namespace)); err != nil {
+		return nil, err
+	}
+	occupied := map[string]bool{}
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if pod.Spec.NodeName == "" {
+			continue
+		}
+		if own[pod.Labels["app"]] {
+			continue
+		}
+		if podRequestsNvidiaGPU(pod) {
+			occupied[pod.Spec.NodeName] = true
+		}
+	}
+	return occupied, nil
+}
+
+func podRequestsNvidiaGPU(pod *corev1.Pod) bool {
+	gpu := corev1.ResourceName("nvidia.com/gpu")
+	for i := range pod.Spec.Containers {
+		res := &pod.Spec.Containers[i].Resources
+		if q, ok := res.Requests[gpu]; ok && !q.IsZero() {
+			return true
+		}
+		if q, ok := res.Limits[gpu]; ok && !q.IsZero() {
+			return true
+		}
+	}
+	return false
+}
+
+func sortedKeys(m map[string]bool) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // pinPlacement writes (node != "") or clears (node == "") the
