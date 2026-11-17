@@ -9,6 +9,8 @@ apps:
     namespace: llm-test
     repoURL: https://github.com/projectinitiative/conductor.git
     targetRevision: HEAD
+    # Immutable multi-arch OCI index with occupancy-aware adjacent placement
+    # (9973764): skip nodes hosting foreign GPU pods; recovery re-places.
     # Immutable multi-arch OCI index with ContainersRunning and status-conflict
     # retry fixes. Pin the index, not a platform leaf.
-    image: ghcr.io/projectinitiative/conductor:sha-477b87d@sha256:5a9df9df0d336d3d0f1062db6429d7d5d1f9d8146dcc36bc950e8985f468ad10
+    image: ghcr.io/projectinitiative/conductor:sha-9973764@sha256:e0078647e91b8faf857c97a80e21b0a398eb6ca0a9f96d1efa2feac93be1c716
