@@ -11,4 +11,4 @@ apps:
     targetRevision: HEAD
     # Immutable multi-arch OCI index with ContainersRunning and status-conflict
     # retry fixes. Pin the index, not a platform leaf.
-    image: ghcr.io/projectinitiative/conductor:sha-ecd904d@sha256:e008cc3b051598208916a4f19e4240aaca221ea83f6c6c51053f9df0c91a8143
+    image: ghcr.io/projectinitiative/conductor:sha-477b87d@sha256:5a9df9df0d336d3d0f1062db6429d7d5d1f9d8146dcc36bc950e8985f468ad10
