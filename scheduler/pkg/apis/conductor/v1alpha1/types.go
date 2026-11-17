@@ -127,6 +127,29 @@ type DeploymentSetSpec struct {
 	// failed resident workloads while their Deployments are still becoming
 	// Available. Zero uses the controller default.
 	StartupGracePeriod metav1.Duration `json:"startupGracePeriod,omitempty"`
+	// Placement optionally constrains where the member pair starts. Empty
+	// keeps placement entirely with the scheduler.
+	Placement *PlacementSpec `json:"placement,omitempty"`
+}
+
+// PlacementSpec selects a placement preference for a DeploymentSet pair.
+type PlacementSpec struct {
+	// Mode selects how strongly the pair prefers direct fabric rails:
+	//
+	//   - "bestRoute": pin onto a ring-adjacent pair (direct rails) when one
+	//     is Ready; otherwise place freely — a non-adjacent pair is served
+	//     over routed RoCE through a ring neighbour (correct, half the
+	//     striped bandwidth).
+	//   - "adjacent": require a ring-adjacent pair; if none is Ready the
+	//     activation blocks (NoAdjacentPair) instead of degrading.
+	//   - "any": never pin; the scheduler decides. Use to exercise the
+	//     routed path deliberately.
+	//
+	//+kubebuilder:validation:Enum=bestRoute,adjacent,any
+	Mode string `json:"mode,omitempty"`
+	// RingLabel is the node label carrying the ring walking order as an
+	// integer position. Empty uses fabric.homelab.io/ring-position.
+	RingLabel string `json:"ringLabel,omitempty"`
 }
 
 type DeploymentMember struct {
@@ -169,9 +192,20 @@ type ManagedWorkloadStatus struct {
 	EffectiveIntent    string             `json:"effectiveIntent,omitempty"`
 	IntentSource       string             `json:"intentSource,omitempty"`
 	Operation          *OperationStatus   `json:"operation,omitempty"`
+	Placement          *PlacementStatus   `json:"placement,omitempty"`
 	Members            []MemberStatus     `json:"members,omitempty"`
 	ReadyEndpoints     int32              `json:"readyEndpoints,omitempty"`
 	Conditions         []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// PlacementStatus records the node pair chosen for the last activation:
+// "adjacent" when both members got ring-neighbour pins, or "free" when
+// placement placed freely (routed RoCE serves it) or the workload declares
+// no placement mode.
+type PlacementStatus struct {
+	Mode       string `json:"mode,omitempty"`
+	HeadNode   string `json:"headNode,omitempty"`
+	WorkerNode string `json:"workerNode,omitempty"`
 }
 
 // +kubebuilder:object:root=true

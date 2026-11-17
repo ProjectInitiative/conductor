@@ -6,6 +6,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net/http"
 	"sort"
 	"time"
@@ -37,6 +38,7 @@ const (
 	PhaseWaitingHeadGone    = "WaitingHeadGone"
 	PhaseStoppingWorkers    = "StoppingWorkers"
 	PhaseWaitingAllGone     = "WaitingAllGone"
+	PhasePlacing            = "Placing"
 	PhaseStartingWorkers    = "StartingWorkers"
 	PhaseWaitingWorkerReady = "WaitingWorkerReady"
 	PhaseStartingHead       = "StartingHead"
@@ -499,7 +501,15 @@ func (r *WorkloadReconciler) reconcileResident(ctx context.Context, workload *co
 				return ctrl.Result{RequeueAfter: 3 * time.Second}, nil
 			}
 		}
+		if placementMode(workload) != "" {
+			// All pods are gone: patching the member nodeSelectors is
+			// race-free here. Deterministic one-mutation-per-pass like the
+			// rest of the state machine.
+			return r.advance(ctx, workload, PhasePlacing, "")
+		}
 		return r.advance(ctx, workload, PhaseStartingWorkers, "")
+	case PhasePlacing:
+		return r.reconcilePlacement(ctx, workload, members)
 	case PhaseStartingWorkers:
 		for _, worker := range workersByStart(members) {
 			want := worker.Spec.Replicas
@@ -600,6 +610,124 @@ func (r *WorkloadReconciler) reconcileStandby(ctx context.Context, workload *con
 	}
 	setCondition(&workload.Status.Conditions, metav1.Condition{Type: ConditionReady, Status: metav1.ConditionFalse, Reason: "Standby", ObservedGeneration: workload.Generation})
 	return r.updateStatus(ctx, workload, "Standby", ctrl.Result{RequeueAfter: 30 * time.Second})
+}
+
+// placementMode returns the workload's configured placement mode, "" when
+// unset. Only DeploymentSet drivers carry placement.
+func placementMode(workload *conductorv1alpha1.ManagedWorkload) string {
+	set := workload.Spec.Driver.DeploymentSet
+	if set == nil || set.Placement == nil {
+		return ""
+	}
+	return set.Placement.Mode
+}
+
+// effectiveRingLabel returns the workload's ring label, defaulting to the
+// dgx-spark label.
+func effectiveRingLabel(workload *conductorv1alpha1.ManagedWorkload) string {
+	set := workload.Spec.Driver.DeploymentSet
+	if set == nil || set.Placement == nil || set.Placement.RingLabel == "" {
+		return DefaultRingLabel
+	}
+	return set.Placement.RingLabel
+}
+
+// reconcilePlacement pins the member pair onto ring-adjacent nodes before
+// they start (phase Placing). Both member pins are applied in one pass — the
+// operation is idempotent, so a controller restart mid-pass safely re-runs
+// it. When no adjacent pair is Ready, members are unpinned and placed
+// freely: routed RoCE serves a non-adjacent pair, so free placement is never
+// an activation error.
+func (r *WorkloadReconciler) reconcilePlacement(ctx context.Context, workload *conductorv1alpha1.ManagedWorkload, members []observedMember) (ctrl.Result, error) {
+	head := headMember(members)
+	if head == nil {
+		return r.failStatus(ctx, workload, PhaseBlocked, "HeadMissing", "DeploymentSet requires one head member", true)
+	}
+	workers := make([]*observedMember, 0, 1)
+	for i := range members {
+		if members[i].Spec.Role != "head" {
+			workers = append(workers, &members[i])
+		}
+	}
+	if len(workers) != 1 {
+		return r.failStatus(ctx, workload, PhaseBlocked, "WorkerCardinality", fmt.Sprintf("adjacent placement expects exactly one worker member, found %d", len(workers)), true)
+	}
+
+	nodes := &corev1.NodeList{}
+	if err := r.Client.List(ctx, nodes); err != nil {
+		return ctrl.Result{}, err
+	}
+	mode := placementMode(workload)
+	status := &conductorv1alpha1.PlacementStatus{Mode: "free"}
+	pair := chooseAdjacentPair(nodes.Items, effectiveRingLabel(workload))
+	switch {
+	case mode == PlacementModeAny:
+		// Never pin, even when an adjacent pair exists: the operator asked
+		// for scheduler freedom (e.g. to exercise the routed path).
+		if err := r.pinPlacement(ctx, &workers[0].Deployment, ""); err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := r.pinPlacement(ctx, &head.Deployment, ""); err != nil {
+			return ctrl.Result{}, err
+		}
+		r.event(workload, corev1.EventTypeNormal, "PlacementFree", "placement mode any: scheduler decides")
+	case pair != nil:
+		status.Mode = PlacementModeAdjacent
+		status.WorkerNode = pair.Worker.Name
+		status.HeadNode = pair.Head.Name
+		if err := r.pinPlacement(ctx, &workers[0].Deployment, pair.Worker.Name); err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := r.pinPlacement(ctx, &head.Deployment, pair.Head.Name); err != nil {
+			return ctrl.Result{}, err
+		}
+		r.event(workload, corev1.EventTypeNormal, "PlacementChosen", fmt.Sprintf("ring-adjacent pair: worker=%s head=%s", pair.Worker.Name, pair.Head.Name))
+	case mode == PlacementModeBestRoute:
+		// No adjacent pair is Ready: unpin and let the scheduler decide.
+		// Routed RoCE serves a non-adjacent pair, so this is never an
+		// activation error. Clearing a stale pin from a previous activation
+		// matters most here.
+		if err := r.pinPlacement(ctx, &workers[0].Deployment, ""); err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := r.pinPlacement(ctx, &head.Deployment, ""); err != nil {
+			return ctrl.Result{}, err
+		}
+		r.event(workload, corev1.EventTypeWarning, "AdjacentPairUnavailable", "no ready ring-adjacent pair; placing freely (routed RoCE serves non-adjacent pairs)")
+	default: // PlacementModeAdjacent with no available pair
+		r.event(workload, corev1.EventTypeWarning, "NoAdjacentPair", "placement mode adjacent requires a ring-adjacent pair; none is Ready")
+		return r.failStatus(ctx, workload, PhaseBlocked, "NoAdjacentPair", "no Ready ring-adjacent pair for placement mode adjacent", true)
+	}
+	workload.Status.Placement = status
+	return r.advance(ctx, workload, PhaseStartingWorkers, "")
+}
+
+// pinPlacement writes (node != "") or clears (node == "") the
+// kubernetes.io/hostname entry in a member Deployment's nodeSelector.
+// Strategic merge keeps the member's other selector keys (gpu, tier, ...).
+func (r *WorkloadReconciler) pinPlacement(ctx context.Context, dep *appsv1.Deployment, node string) error {
+	fresh := &appsv1.Deployment{}
+	if err := r.APIReader.Get(ctx, types.NamespacedName{Namespace: dep.Namespace, Name: dep.Name}, fresh); err != nil {
+		return err
+	}
+	if dep.UID != "" && fresh.UID != dep.UID {
+		return fmt.Errorf("deployment %s identity changed; refusing stale placement pin", dep.Name)
+	}
+	desired := make(map[string]string, len(fresh.Spec.Template.Spec.NodeSelector)+1)
+	for k, v := range fresh.Spec.Template.Spec.NodeSelector {
+		desired[k] = v
+	}
+	if node == "" {
+		delete(desired, "kubernetes.io/hostname")
+	} else {
+		desired["kubernetes.io/hostname"] = node
+	}
+	if maps.Equal(fresh.Spec.Template.Spec.NodeSelector, desired) {
+		return nil
+	}
+	base := fresh.DeepCopy()
+	fresh.Spec.Template.Spec.NodeSelector = desired
+	return r.Patch(ctx, fresh, client.StrategicMergeFrom(base))
 }
 
 func (r *WorkloadReconciler) scale(ctx context.Context, dep *appsv1.Deployment, replicas int32) error {

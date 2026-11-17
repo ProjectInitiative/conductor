@@ -73,6 +73,29 @@ spec:
                         type: array
                       recoveryPolicy:
                         type: string
+                      placement:
+                        properties:
+                          mode:
+                            description: |-
+                              Mode selects how strongly the pair prefers direct fabric rails:
+
+                              - "bestRoute": pin onto a ring-adjacent pair (direct rails) when one
+                                is Ready; otherwise place freely — a non-adjacent pair is served
+                                over routed RoCE through a ring neighbour (correct, half the
+                                striped bandwidth).
+                              - "adjacent": require a ring-adjacent pair; if none is Ready the
+                                activation blocks (NoAdjacentPair) instead of degrading.
+                              - "any": never pin; the scheduler decides. Use to exercise the
+                                routed path deliberately.
+                            enum:
+                            - bestRoute
+                            - adjacent
+                            - any
+                            type: string
+                          ringLabel:
+                            description: RingLabel is the node label carrying the ring walking order as an integer position. Empty uses fabric.homelab.io/ring-position.
+                            type: string
+                        type: object
                       startupGracePeriod:
                         type: string
                     required:
@@ -224,6 +247,20 @@ spec:
                 type: object
               phase:
                 type: string
+              placement:
+                description: |-
+                  PlacementStatus records the node pair chosen for the last activation:
+                  "adjacent" when both members got ring-neighbour pins, or "free" when
+                  placement placed freely (routed RoCE serves it) or the workload declares
+                  no placement mode.
+                properties:
+                  headNode:
+                    type: string
+                  mode:
+                    type: string
+                  workerNode:
+                    type: string
+                type: object
               readyEndpoints:
                 format: int32
                 type: integer

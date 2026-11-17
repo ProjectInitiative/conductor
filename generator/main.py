@@ -97,7 +97,7 @@ class ConductorStack(Chart):
                  "resources": ["modeldownloads/finalizers"],
                  "verbs": ["update"]},
                 {"apiGroups": ["apps"], "resources": ["deployments", "replicasets"],
-                 "verbs": ["get", "list", "watch"]},
+                 "verbs": ["get", "list", "watch", "patch"]},
                 {"apiGroups": ["apps"], "resources": ["deployments/scale"],
                  "verbs": ["get", "patch", "update"]},
                 {"apiGroups": [""], "resources": ["pods", "services"],
