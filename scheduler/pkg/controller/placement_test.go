@@ -230,7 +230,7 @@ func TestPlacementAdjacentBlocksWhenNoPairReady(t *testing.T) {
 	}
 }
 
-func TestNodeReadySkipsCordonAndTaints(t *testing.T) {
+func TestNodeReadySkipsCordonButIgnoresPoolTaints(t *testing.T) {
 	ready := mkRingNode("a", "0", true)
 	if !nodeReady(ready) {
 		t.Fatal("ready node reported ineligible")
@@ -240,17 +240,13 @@ func TestNodeReadySkipsCordonAndTaints(t *testing.T) {
 	if nodeReady(unschedulable) {
 		t.Fatal("cordoned node reported eligible")
 	}
+	// Dedicated-pool taints are the members' own: the dgx-spark nodes carry
+	// dgx-spark-dedicated=true:NoSchedule and the lanes tolerate it, so a
+	// tainted node must stay placement-eligible.
 	tainted := mkRingNode("c", "2", true)
 	tainted.Spec.Taints = []corev1.Taint{{Key: "dgx-spark-dedicated", Value: "true", Effect: corev1.TaintEffectNoSchedule}}
-	if nodeReady(tainted) {
-		t.Fatal("NoSchedule-tainted node reported eligible")
-	}
-	tolerable := mkRingNode("d", "3", true)
-	tolerable.Spec.Taints = []corev1.Taint{{Key: "dgx-spark-dedicated", Value: "true", Effect: corev1.TaintEffectNoSchedule}}
-	tolerantWorkload := false // only the taint matters here; tolerance is the workload's concern
-	_ = tolerantWorkload
-	if nodeReady(tolerable) {
-		t.Fatal("tainted node reported eligible")
+	if !nodeReady(tainted) {
+		t.Fatal("pool-tainted node reported ineligible")
 	}
 }
 
@@ -261,9 +257,8 @@ func TestChooseAdjacentPairSkipsCordonedNode(t *testing.T) {
 		*mkRingNode("chronometer", "2", true),
 		*mkRingNode("sextant", "3", true),
 	}
-	// Cordon octant: the astro->oct edge must be skipped, fall through to
-	// oct->chron which also contains octant... both edges with octant are out;
-	// chron(2)->sext(3) is the first eligible edge.
+	// Cordon octant: both edges containing octant are out; chron(2)->sext(3)
+	// is the first eligible edge.
 	unschedulable := nodes[1]
 	unschedulable.Spec.Unschedulable = true
 	nodes[1] = unschedulable

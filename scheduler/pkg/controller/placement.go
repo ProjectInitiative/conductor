@@ -46,18 +46,15 @@ type adjacentPair struct {
 	Head   ringNode
 }
 
-// nodeReady reports placement eligibility: NodeReady condition True, not
-// cordoned (spec.unschedulable), and carrying no NoSchedule/NoExecute taint.
-// Taint-tolerating workloads are not considered here — placement is
-// deliberately conservative about which nodes it pins to.
+// nodeReady reports placement eligibility: NodeReady condition True and not
+// cordoned (spec.unschedulable). Pool taints are deliberately ignored — every
+// member of a dedicated pool tolerates its own taints (the dgx-spark nodes
+// carry dgx-spark-dedicated=true:NoSchedule and the serving lanes tolerate
+// it), so taint-awareness here would collapse placement on dedicated pools.
+// Quarantine uses cordon, which both the scheduler and placement skip.
 func nodeReady(node *corev1.Node) bool {
 	if node.Spec.Unschedulable {
 		return false
-	}
-	for _, taint := range node.Spec.Taints {
-		if taint.Effect == corev1.TaintEffectNoSchedule || taint.Effect == corev1.TaintEffectNoExecute {
-			return false
-		}
 	}
 	for i := range node.Status.Conditions {
 		c := &node.Status.Conditions[i]
