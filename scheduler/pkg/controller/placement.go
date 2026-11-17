@@ -46,10 +46,19 @@ type adjacentPair struct {
 	Head   ringNode
 }
 
-// nodeReady reports scheduling readiness: the NodeReady condition is True.
-// Taint handling stays with the scheduler; placement only avoids nodes the
-// control plane already marked NotReady.
+// nodeReady reports placement eligibility: NodeReady condition True, not
+// cordoned (spec.unschedulable), and carrying no NoSchedule/NoExecute taint.
+// Taint-tolerating workloads are not considered here — placement is
+// deliberately conservative about which nodes it pins to.
 func nodeReady(node *corev1.Node) bool {
+	if node.Spec.Unschedulable {
+		return false
+	}
+	for _, taint := range node.Spec.Taints {
+		if taint.Effect == corev1.TaintEffectNoSchedule || taint.Effect == corev1.TaintEffectNoExecute {
+			return false
+		}
+	}
 	for i := range node.Status.Conditions {
 		c := &node.Status.Conditions[i]
 		if c.Type == corev1.NodeReady {

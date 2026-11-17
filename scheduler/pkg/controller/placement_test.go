@@ -229,3 +229,49 @@ func TestPlacementAdjacentBlocksWhenNoPairReady(t *testing.T) {
 		t.Fatalf("blocked condition=%+v, want reason NoAdjacentPair", blocked)
 	}
 }
+
+func TestNodeReadySkipsCordonAndTaints(t *testing.T) {
+	ready := mkRingNode("a", "0", true)
+	if !nodeReady(ready) {
+		t.Fatal("ready node reported ineligible")
+	}
+	unschedulable := mkRingNode("b", "1", true)
+	unschedulable.Spec.Unschedulable = true
+	if nodeReady(unschedulable) {
+		t.Fatal("cordoned node reported eligible")
+	}
+	tainted := mkRingNode("c", "2", true)
+	tainted.Spec.Taints = []corev1.Taint{{Key: "dgx-spark-dedicated", Value: "true", Effect: corev1.TaintEffectNoSchedule}}
+	if nodeReady(tainted) {
+		t.Fatal("NoSchedule-tainted node reported eligible")
+	}
+	tolerable := mkRingNode("d", "3", true)
+	tolerable.Spec.Taints = []corev1.Taint{{Key: "dgx-spark-dedicated", Value: "true", Effect: corev1.TaintEffectNoSchedule}}
+	tolerantWorkload := false // only the taint matters here; tolerance is the workload's concern
+	_ = tolerantWorkload
+	if nodeReady(tolerable) {
+		t.Fatal("tainted node reported eligible")
+	}
+}
+
+func TestChooseAdjacentPairSkipsCordonedNode(t *testing.T) {
+	nodes := []corev1.Node{
+		*mkRingNode("astrolabe", "0", true),
+		*mkRingNode("octant", "1", true),
+		*mkRingNode("chronometer", "2", true),
+		*mkRingNode("sextant", "3", true),
+	}
+	// Cordon octant: the astro->oct edge must be skipped, fall through to
+	// oct->chron which also contains octant... both edges with octant are out;
+	// chron(2)->sext(3) is the first eligible edge.
+	unschedulable := nodes[1]
+	unschedulable.Spec.Unschedulable = true
+	nodes[1] = unschedulable
+	pair := chooseAdjacentPair(nodes, DefaultRingLabel)
+	if pair == nil {
+		t.Fatal("pair=nil, want chronometer/sextant")
+	}
+	if pair.Worker.Name != "chronometer" || pair.Head.Name != "sextant" {
+		t.Fatalf("pair=%+v", pair)
+	}
+}
