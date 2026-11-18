@@ -438,6 +438,27 @@ func (r *WorkloadReconciler) reconcileResident(ctx context.Context, workload *co
 		setCondition(&workload.Status.Conditions, metav1.Condition{Type: ConditionProgressing, Status: metav1.ConditionTrue, Reason: "WaitingForPriorityPreemption", Message: "waiting for lower-priority workload " + pending + " to release pool capacity", ObservedGeneration: workload.Generation})
 		return r.updateStatus(ctx, workload, PhaseObserving, ctrl.Result{RequeueAfter: 5 * time.Second})
 	}
+	// Watchdog: a persisted operation that has not advanced within the
+	// startup grace period is stale — the catch-all exit for any phase pair
+	// the state machine cannot leave (e.g. a member vanishing mid-recovery
+	// while a wait phase waits on it). Restarting from Observing re-assesses
+	// fresh state; pods still inside their startup grace window are never
+	// killed, because the entry branch treats them as StartupInProgress.
+	if op := workload.Status.Operation; op != nil {
+		grace := workload.Spec.Driver.DeploymentSet.StartupGracePeriod.Duration
+		if grace <= 0 {
+			grace = defaultStartupGracePeriod
+		}
+		base := op.UpdatedAt.Time
+		if base.IsZero() {
+			base = op.StartedAt.Time
+		}
+		if !base.IsZero() && r.Clock.Now().Sub(base) > grace {
+			r.event(workload, corev1.EventTypeWarning, "OperationTimedOut", "recovery operation made no progress within the startup grace period; restarting from Observing")
+			workload.Status.Operation = nil
+			return r.updateStatus(ctx, workload, PhaseObserving, ctrl.Result{RequeueAfter: 5 * time.Second})
+		}
+	}
 	phase := workload.Status.Phase
 	healthy, reason := assess(members, conductorv1alpha1.DesiredResident)
 	if (phase == "" || phase == PhaseReady || phase == PhaseObserving) && healthy {
@@ -461,6 +482,15 @@ func (r *WorkloadReconciler) reconcileResident(ctx context.Context, workload *co
 	if (phase == "" || phase == PhaseReady || phase == PhaseObserving || phase == PhaseBlocked) && r.startupInProgress(workload, members) {
 		setCondition(&workload.Status.Conditions, metav1.Condition{Type: ConditionProgressing, Status: metav1.ConditionTrue, Reason: "StartupInProgress", ObservedGeneration: workload.Generation})
 		setCondition(&workload.Status.Conditions, metav1.Condition{Type: ConditionReady, Status: metav1.ConditionFalse, Reason: "StartupInProgress", ObservedGeneration: workload.Generation})
+		return r.updateStatus(ctx, workload, PhaseObserving, ctrl.Result{RequeueAfter: 15 * time.Second})
+	}
+	if (phase == "" || phase == PhaseReady || phase == PhaseObserving || phase == PhaseBlocked) && reason == "DeploymentMissing" {
+		// A member Deployment does not exist. Creation belongs to the
+		// declarative layer (Argo/Git) or the operator; starting a recovery
+		// now would immediately fail in StoppingHead with HeadMissing and
+		// churn Blocked->restart forever. Hold until the member appears.
+		setCondition(&workload.Status.Conditions, metav1.Condition{Type: ConditionProgressing, Status: metav1.ConditionTrue, Reason: "WaitingForMember", Message: "member Deployment missing; waiting for creation before recovery", ObservedGeneration: workload.Generation})
+		setCondition(&workload.Status.Conditions, metav1.Condition{Type: ConditionReady, Status: metav1.ConditionFalse, Reason: "WaitingForMember", ObservedGeneration: workload.Generation})
 		return r.updateStatus(ctx, workload, PhaseObserving, ctrl.Result{RequeueAfter: 15 * time.Second})
 	}
 	if phase == "" || phase == PhaseReady || phase == PhaseObserving || phase == PhaseBlocked {
@@ -533,7 +563,25 @@ func (r *WorkloadReconciler) reconcileResident(ctx context.Context, workload *co
 	case PhaseWaitingWorkerReady:
 		name := workload.Status.Operation.CurrentMember
 		member := findMember(members, name)
-		if member == nil || !memberReady(*member) {
+		if member == nil || member.Deployment.Name == "" {
+			// The member vanished mid-recovery (Deployment deleted while the
+			// operation waited on it). Waiting is unsatisfiable; restart the
+			// operation from fresh observations instead.
+			return r.abortStaleOperation(ctx, workload, "member "+name+" missing during "+PhaseWaitingWorkerReady)
+		}
+		want := member.Spec.Replicas
+		if want == 0 {
+			want = 1
+		}
+		if ptrValue(member.Deployment.Spec.Replicas) != want {
+			// Replicas drifted while waiting (e.g. an external apply reset
+			// them). Re-assert the invariant rather than waiting for an
+			// unreachable state (2026-11-18 glm53-flash-1104 deadlock).
+			if err := r.scale(ctx, &member.Deployment, want); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+		if !memberReady(*member) {
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		}
 		workload.Status.Operation.CurrentMember = ""
@@ -554,6 +602,23 @@ func (r *WorkloadReconciler) reconcileResident(ctx context.Context, workload *co
 		}
 		return r.advance(ctx, workload, PhaseQualifying, head.Spec.Name)
 	case PhaseQualifying:
+		for _, member := range members {
+			if member.Deployment.Name == "" {
+				return r.abortStaleOperation(ctx, workload, "member "+member.Spec.Name+" missing during "+PhaseQualifying)
+			}
+			want := member.Spec.Replicas
+			if want == 0 {
+				want = 1
+			}
+			if ptrValue(member.Deployment.Spec.Replicas) != want {
+				// Re-assert replicas drifted by an external apply while the
+				// operation qualified (2026-11-18 glm53-flash-1104 deadlock:
+				// an SSA sync zeroed the head mid-qualification).
+				if err := r.scale(ctx, &member.Deployment, want); err != nil {
+					return ctrl.Result{}, err
+				}
+			}
+		}
 		for _, member := range members {
 			if !memberReady(member) {
 				return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
@@ -582,6 +647,16 @@ func (r *WorkloadReconciler) reconcileResident(ctx context.Context, workload *co
 	default:
 		return r.failStatus(ctx, workload, PhaseBlocked, "UnknownPhase", phase, true)
 	}
+}
+
+// abortStaleOperation clears an in-flight recovery whose world changed
+// underneath it (e.g. a member Deployment was deleted mid-operation). Waiting
+// in the current phase would never terminate; re-entering from Observing
+// re-assesses fresh state and starts a clean operation once members exist.
+func (r *WorkloadReconciler) abortStaleOperation(ctx context.Context, workload *conductorv1alpha1.ManagedWorkload, why string) (ctrl.Result, error) {
+	r.event(workload, corev1.EventTypeWarning, "OperationAborted", why+"; restarting recovery from Observing")
+	workload.Status.Operation = nil
+	return r.updateStatus(ctx, workload, PhaseObserving, ctrl.Result{RequeueAfter: 5 * time.Second})
 }
 
 func (r *WorkloadReconciler) reconcileStandby(ctx context.Context, workload *conductorv1alpha1.ManagedWorkload, members []observedMember) (ctrl.Result, error) {

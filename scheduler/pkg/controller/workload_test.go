@@ -354,3 +354,95 @@ func TestOverridePrecedenceAndExpiry(t *testing.T) {
 		t.Fatalf("desired=%s source=%s", desired, source)
 	}
 }
+
+func TestWaitingWorkerReadyAbortsWhenMemberVanishes(t *testing.T) {
+	pool, workload, _, head := workloadObjects(conductorv1alpha1.ManagementManage)
+	// Worker Deployment deleted mid-recovery while the operation waits on it.
+	workload.Status.Phase = PhaseWaitingWorkerReady
+	workload.Status.Operation = &conductorv1alpha1.OperationStatus{Phase: PhaseWaitingWorkerReady, CurrentMember: "worker", UpdatedAt: metav1.NewTime(time.Unix(100, 0))}
+	scheme := testScheme(t)
+	client := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(workload).WithObjects(pool, workload, head).Build()
+	r := &WorkloadReconciler{Client: client, APIReader: client, Clock: clocktesting.NewFakeClock(time.Unix(100, 0))}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "llm-test", Name: "tensorfold"}}); err != nil {
+		t.Fatal(err)
+	}
+	var got conductorv1alpha1.ManagedWorkload
+	_ = client.Get(context.Background(), types.NamespacedName{Namespace: "llm-test", Name: "tensorfold"}, &got)
+	if got.Status.Phase != PhaseObserving || got.Status.Operation != nil {
+		t.Fatalf("stuck operation did not abort on missing member: %+v", got.Status)
+	}
+}
+
+func TestQualifyingReassertsReplicasDriftedByExternalApply(t *testing.T) {
+	pool, workload, worker, head := workloadObjects(conductorv1alpha1.ManagementManage)
+	// Both members available, but an external SSA apply zeroed the head
+	// mid-qualification (2026-11-18 glm53-flash-1104 deadlock).
+	head.Spec.Replicas = i32(0)
+	workload.Status.Phase = PhaseQualifying
+	workload.Status.Operation = &conductorv1alpha1.OperationStatus{Phase: PhaseQualifying, CurrentMember: "head", UpdatedAt: metav1.NewTime(time.Unix(100, 0))}
+	scheme := testScheme(t)
+	client := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(workload).WithObjects(pool, workload, worker, head).Build()
+	r := &WorkloadReconciler{Client: client, APIReader: client, Clock: clocktesting.NewFakeClock(time.Unix(100, 0))}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "llm-test", Name: "tensorfold"}}); err != nil {
+		t.Fatal(err)
+	}
+	var gotHead appsv1.Deployment
+	if err := client.Get(context.Background(), types.NamespacedName{Namespace: "llm-test", Name: "head"}, &gotHead); err != nil {
+		t.Fatal(err)
+	}
+	if *gotHead.Spec.Replicas != 1 {
+		t.Fatalf("Qualifying did not re-assert drifted replicas: head=%d", *gotHead.Spec.Replicas)
+	}
+}
+
+func TestResidentWithMissingMemberHoldsInsteadOfRecoveryChurn(t *testing.T) {
+	pool, workload, worker, _ := workloadObjects(conductorv1alpha1.ManagementManage)
+	// Head Deployment does not exist (deleted by an Application cascade).
+	// Recovery must not start: StoppingHead would churn HeadMissing forever.
+	workload.Status.Phase = PhaseObserving
+	scheme := testScheme(t)
+	client := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(workload).WithObjects(pool, workload, worker).Build()
+	r := &WorkloadReconciler{Client: client, APIReader: client, Clock: clocktesting.NewFakeClock(time.Unix(100, 0))}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "llm-test", Name: "tensorfold"}}); err != nil {
+		t.Fatal(err)
+	}
+	var got conductorv1alpha1.ManagedWorkload
+	_ = client.Get(context.Background(), types.NamespacedName{Namespace: "llm-test", Name: "tensorfold"}, &got)
+	if got.Status.Phase != PhaseObserving || got.Status.Operation != nil {
+		t.Fatalf("missing member triggered recovery churn: %+v", got.Status)
+	}
+	progressing := false
+	for _, c := range got.Status.Conditions {
+		if c.Type == ConditionProgressing && c.Reason == "WaitingForMember" {
+			progressing = true
+		}
+	}
+	if !progressing {
+		t.Fatalf("expected WaitingForMember progressing condition: %+v", got.Status.Conditions)
+	}
+}
+
+func TestStaleOperationIsWatchdogRestarted(t *testing.T) {
+	pool, workload, worker, head := workloadObjects(conductorv1alpha1.ManagementManage)
+	// Operation frozen in a wait phase far beyond the startup grace period.
+	workload.Spec.Driver.DeploymentSet.StartupGracePeriod = metav1.Duration{Duration: 30 * time.Minute}
+	workload.Status.Phase = PhaseQualifying
+	workload.Status.Operation = &conductorv1alpha1.OperationStatus{Phase: PhaseQualifying, CurrentMember: "head", UpdatedAt: metav1.NewTime(time.Unix(0, 0))}
+	scheme := testScheme(t)
+	client := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(workload).WithObjects(pool, workload, worker, head).Build()
+	r := &WorkloadReconciler{Client: client, APIReader: client, Clock: clocktesting.NewFakeClock(time.Unix(100, 0))}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "llm-test", Name: "tensorfold"}}); err != nil {
+		t.Fatal(err)
+	}
+	var got conductorv1alpha1.ManagedWorkload
+	_ = client.Get(context.Background(), types.NamespacedName{Namespace: "llm-test", Name: "tensorfold"}, &got)
+	if got.Status.Operation != nil {
+		t.Fatalf("watchdog did not clear stale operation: %+v", got.Status.Operation)
+	}
+	// After the abort the workload re-enters from Observing; members are
+	// healthy here, so the next assessment path must be a clean one (not a
+	// frozen wait).
+	if got.Status.Phase == PhaseQualifying {
+		t.Fatalf("watchdog left workload frozen in %q", got.Status.Phase)
+	}
+}
