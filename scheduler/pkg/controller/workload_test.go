@@ -447,7 +447,6 @@ func TestStaleOperationIsWatchdogRestarted(t *testing.T) {
 	}
 }
 
-
 func mkPoolSlots(mode conductorv1alpha1.ManagementMode, slots int32) *conductorv1alpha1.ResourcePool {
 	pool := &conductorv1alpha1.ResourcePool{
 		TypeMeta:   metav1.TypeMeta{APIVersion: conductorv1alpha1.GroupVersion.String(), Kind: "ResourcePool"},

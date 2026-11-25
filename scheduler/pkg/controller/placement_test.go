@@ -1,8 +1,8 @@
 package controller
 
 import (
-	"k8s.io/apimachinery/pkg/api/resource"
 	"context"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"testing"
 	"time"
 
