@@ -96,6 +96,17 @@ spec:
                             description: RingLabel is the node label carrying the ring walking order as an integer position. Empty uses fabric.homelab.io/ring-position.
                             type: string
                         type: object
+                      sparks:
+                        description: |-
+                          Sparks is this workload's demand against the pool's spark capacity
+                          (ResourcePoolCapacity.Slots). Zero defaults to the sum of member
+                          replicas (a TP2 pair demands 2). A workload admits only if the pool
+                          has room for its demand after all higher-urgency residents are
+                          admitted (priority ascending, then name); a recipe that can use more
+                          sparks than it needs simply declares the size it requires to be
+                          admitted — spare capacity stays available to smaller workloads.
+                        format: int32
+                        type: integer
                       startupGracePeriod:
                         type: string
                     required:

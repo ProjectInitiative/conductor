@@ -251,24 +251,36 @@ func (r *WorkloadReconciler) effectiveIntent(ctx context.Context, workload *cond
 	if desired != conductorv1alpha1.DesiredResident {
 		return desired, "Baseline", nil
 	}
-	winner, err := r.priorityWinner(ctx, workload.Namespace, workload.Spec.PoolRef, overrides, now)
+	pool := &conductorv1alpha1.ResourcePool{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: workload.Namespace, Name: workload.Spec.PoolRef}, pool); err != nil {
+		return desired, "Baseline", err
+	}
+	plan, sources, err := r.residentPlan(ctx, workload.Namespace, workload.Spec.PoolRef, pool.Spec.Capacity.Slots, overrides, now)
 	if err != nil {
 		return desired, "Baseline", err
 	}
-	if winner != "" && winner != workload.Name {
-		return conductorv1alpha1.DesiredStandby, "Priority/" + winner, nil
+	if state, ok := plan[workload.Name]; ok {
+		return state, sources[workload.Name], nil
 	}
 	return desired, "Baseline", nil
 }
 
-// priorityWinner returns the resident baseline workload that should own a
-// pool. Lower values are more urgent; names provide deterministic tie-breaking.
-// An active Pin override selects its target before priority comparison. This
-// is automatic arbitration only: explicit safety blocks still win.
-func (r *WorkloadReconciler) priorityWinner(ctx context.Context, namespace, poolRef string, overrides conductorv1alpha1.WorkloadOverrideList, now time.Time) (string, error) {
+// residentPlan computes the admitted-resident set for one pool. Residents
+// are admitted in urgency order (priority ascending, then name); each is
+// admitted if the pool's spark capacity still fits its demand
+// (DeploymentSetSpec.Sparks, defaulting to member replica count). A workload
+// that does not fit — and every resident after it — is stranded as
+// Standby/Priority/<first admitted>, preserving evict-by-priority semantics
+// now bounded by resources instead of workload count. A Pin override still
+// selects its target ahead of capacity accounting.
+//
+// capacity 0 on a pool means one resident owns the pool (the historical
+// winner-takes-all shape): demand is then ignored and only the most urgent
+// resident is admitted.
+func (r *WorkloadReconciler) residentPlan(ctx context.Context, namespace, poolRef string, capacity int32, overrides conductorv1alpha1.WorkloadOverrideList, now time.Time) (map[string]conductorv1alpha1.DesiredState, map[string]string, error) {
 	var workloads conductorv1alpha1.ManagedWorkloadList
 	if err := r.List(ctx, &workloads, client.InNamespace(namespace)); err != nil {
-		return "", err
+		return nil, nil, err
 	}
 	pinned := ""
 	for _, override := range overrides.Items {
@@ -277,21 +289,55 @@ func (r *WorkloadReconciler) priorityWinner(ctx context.Context, namespace, pool
 			break
 		}
 	}
-	winner := ""
-	winnerPriority := int32(0)
-	for _, candidate := range workloads.Items {
-		if candidate.Spec.PoolRef != poolRef || candidate.Spec.DesiredState != conductorv1alpha1.DesiredResident || candidate.Spec.Paused {
+	type candidate struct {
+		name     string
+		priority int32
+		sparks   int32
+	}
+	candidates := make([]candidate, 0, len(workloads.Items))
+	for i := range workloads.Items {
+		w := &workloads.Items[i]
+		if w.Spec.PoolRef != poolRef || w.Spec.DesiredState != conductorv1alpha1.DesiredResident || w.Spec.Paused {
 			continue
 		}
-		if pinned != "" && candidate.Name != pinned {
+		if pinned != "" && w.Name != pinned {
 			continue
 		}
-		if winner == "" || candidate.Spec.Priority < winnerPriority || (candidate.Spec.Priority == winnerPriority && candidate.Name < winner) {
-			winner = candidate.Name
-			winnerPriority = candidate.Spec.Priority
+		sparks := w.Spec.Driver.DeploymentSet.DeploymentSetSparks()
+		candidates = append(candidates, candidate{name: w.Name, priority: w.Spec.Priority, sparks: sparks})
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].priority != candidates[j].priority {
+			return candidates[i].priority < candidates[j].priority
+		}
+		return candidates[i].name < candidates[j].name
+	})
+	plan := make(map[string]conductorv1alpha1.DesiredState, len(candidates))
+	sources := make(map[string]string, len(candidates))
+	admitted := ""
+	used := int32(0)
+	for _, c := range candidates {
+		fits := used+c.sparks <= capacity
+		if admitted == "" {
+			// The first resident is always admitted: a pool must serve its
+			// most urgent workload even if demand exceeds capacity (the old
+			// winner semantics for oversized requests).
+			admitted = c.name
+			used += c.sparks
+			plan[c.name] = conductorv1alpha1.DesiredResident
+			sources[c.name] = "Baseline"
+			continue
+		}
+		if fits {
+			used += c.sparks
+			plan[c.name] = conductorv1alpha1.DesiredResident
+			sources[c.name] = "Baseline"
+		} else {
+			plan[c.name] = conductorv1alpha1.DesiredStandby
+			sources[c.name] = "Priority/" + admitted
 		}
 	}
-	return winner, nil
+	return plan, sources, nil
 }
 
 func assess(members []observedMember, desired conductorv1alpha1.DesiredState) (bool, string) {
@@ -373,15 +419,31 @@ func (r *WorkloadReconciler) nodeSafety(ctx context.Context, pool *conductorv1al
 	return false, "", nil
 }
 
+// priorityPreemptionPending reports a lower-urgency resident still holding
+// deployments while this workload is stranded by the resident plan (or, for
+// the historically shaped pools, waiting on an equal-priority name
+// tiebreak). Capacity-fitting residents never wait on anyone.
 func (r *WorkloadReconciler) priorityPreemptionPending(ctx context.Context, workload *conductorv1alpha1.ManagedWorkload) (string, error) {
 	var overrides conductorv1alpha1.WorkloadOverrideList
 	if err := r.List(ctx, &overrides, client.InNamespace(workload.Namespace)); err != nil {
 		return "", err
 	}
-	winner, err := r.priorityWinner(ctx, workload.Namespace, workload.Spec.PoolRef, overrides, r.Clock.Now())
-	if err != nil || winner != workload.Name {
+	pool := &conductorv1alpha1.ResourcePool{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: workload.Namespace, Name: workload.Spec.PoolRef}, pool); err != nil {
 		return "", err
 	}
+	now := r.Clock.Now()
+	plan, _, err := r.residentPlan(ctx, workload.Namespace, workload.Spec.PoolRef, pool.Spec.Capacity.Slots, overrides, now)
+	if err != nil {
+		return "", err
+	}
+	if state, ok := plan[workload.Name]; !ok || state != conductorv1alpha1.DesiredResident {
+		// Stranded workloads drain themselves via reconcileStandby; they are
+		// not waiting on another workload's deployments.
+		return "", nil
+	}
+	// Admitted: wait until every non-admitted resident has released its
+	// deployments (requireFencing forbids double-occupancy handover).
 	var workloads conductorv1alpha1.ManagedWorkloadList
 	if err := r.List(ctx, &workloads, client.InNamespace(workload.Namespace)); err != nil {
 		return "", err

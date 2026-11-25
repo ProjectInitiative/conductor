@@ -43,6 +43,11 @@ spec:
               capacity:
                 properties:
                   slots:
+                    description: |-
+                      Pool capacity in spark units (one spark = one GPU node of the
+                      pool). Workloads declare their demand in sparks and are
+                      admitted in priority order until capacity is exhausted. Zero
+                      means one resident owns the pool (winner-takes-all).
                     format: int32
                     type: integer
                 type: object

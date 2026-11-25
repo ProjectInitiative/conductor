@@ -446,3 +446,158 @@ func TestStaleOperationIsWatchdogRestarted(t *testing.T) {
 		t.Fatalf("watchdog left workload frozen in %q", got.Status.Phase)
 	}
 }
+
+
+func mkPoolSlots(mode conductorv1alpha1.ManagementMode, slots int32) *conductorv1alpha1.ResourcePool {
+	pool := &conductorv1alpha1.ResourcePool{
+		TypeMeta:   metav1.TypeMeta{APIVersion: conductorv1alpha1.GroupVersion.String(), Kind: "ResourcePool"},
+		ObjectMeta: metav1.ObjectMeta{Name: "dgx", Namespace: "llm-test"},
+		Spec:       conductorv1alpha1.ResourcePoolSpec{ManagementMode: mode, Capacity: conductorv1alpha1.ResourcePoolCapacity{Slots: slots}},
+	}
+	return pool
+}
+
+func mkResident(name string, priority int32, sparks int32) *conductorv1alpha1.ManagedWorkload {
+	w := &conductorv1alpha1.ManagedWorkload{
+		TypeMeta:   metav1.TypeMeta{APIVersion: conductorv1alpha1.GroupVersion.String(), Kind: "ManagedWorkload"},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "llm-test", UID: types.UID("uid-" + name), Generation: 1},
+		Spec: conductorv1alpha1.ManagedWorkloadSpec{
+			PoolRef: "dgx", DesiredState: conductorv1alpha1.DesiredResident, Priority: priority,
+			Driver: conductorv1alpha1.WorkloadDriver{Type: "DeploymentSet", DeploymentSet: &conductorv1alpha1.DeploymentSetSpec{
+				RecoveryPolicy: "RecreateTogether", Sparks: sparks,
+				Members: []conductorv1alpha1.DeploymentMember{
+					{Name: name + "-worker", Role: "worker", StartOrder: 10, StopOrder: 20, Replicas: 1},
+					{Name: name + "-head", Role: "head", StartOrder: 20, StopOrder: 10, Replicas: 1},
+				}}},
+		},
+	}
+	return w
+}
+
+// Two TP2 residents fit a 4-spark pool: both admitted (the A+B co-residency case).
+func TestCapacityAdmitsTwoSparkPairsOnFourSparkPool(t *testing.T) {
+	pool := mkPoolSlots(conductorv1alpha1.ManagementManage, 4)
+	a := mkResident("flash-a", 90, 2)
+	b := mkResident("flash-b", 80, 2)
+	scheme := testScheme(t)
+	client := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(pool, a, b).Build()
+	r := &WorkloadReconciler{Client: client, Clock: clocktesting.NewFakeClock(time.Unix(100, 0))}
+	for _, w := range []*conductorv1alpha1.ManagedWorkload{a, b} {
+		desired, source, err := r.effectiveIntent(context.Background(), w)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if desired != conductorv1alpha1.DesiredResident || source != "Baseline" {
+			t.Fatalf("%s: desired=%s source=%s", w.Name, desired, source)
+		}
+	}
+}
+
+// A 3-spark resident + a 2-spark resident do not both fit a 4-spark pool:
+// the more urgent (lower priority value) is admitted, the other stranded.
+func TestCapacityStrandsLowerPriorityWhenDemandExceeds(t *testing.T) {
+	pool := mkPoolSlots(conductorv1alpha1.ManagementManage, 4)
+	big := mkResident("big-tp3", 10, 3)
+	small := mkResident("small-tp2", 50, 2)
+	scheme := testScheme(t)
+	client := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(pool, big, small).Build()
+	r := &WorkloadReconciler{Client: client, Clock: clocktesting.NewFakeClock(time.Unix(100, 0))}
+	desired, source, err := r.effectiveIntent(context.Background(), big)
+	if err != nil || desired != conductorv1alpha1.DesiredResident {
+		t.Fatalf("big: desired=%s err=%v", desired, err)
+	}
+	desired, source, err = r.effectiveIntent(context.Background(), small)
+	if err != nil || desired != conductorv1alpha1.DesiredStandby || source != "Priority/big-tp3" {
+		t.Fatalf("small: desired=%s source=%s err=%v", desired, source, err)
+	}
+}
+
+// Sparks unset defaults to member replica count (a TP2 pair demands 2).
+func TestSparksDefaultToMemberReplicas(t *testing.T) {
+	pool := mkPoolSlots(conductorv1alpha1.ManagementManage, 3)
+	a := mkResident("a", 90, 0)
+	b := mkResident("b", 80, 0)
+	a.Spec.Driver.DeploymentSet.Sparks = 0
+	b.Spec.Driver.DeploymentSet.Sparks = 0
+	scheme := testScheme(t)
+	client := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(pool, a, b).Build()
+	r := &WorkloadReconciler{Client: client, Clock: clocktesting.NewFakeClock(time.Unix(100, 0))}
+	// 2+2 > 3: a cannot fit after b (b is more urgent at 80 vs 90).
+	desired, source, err := r.effectiveIntent(context.Background(), a)
+	if err != nil || desired != conductorv1alpha1.DesiredStandby || source != "Priority/b" {
+		t.Fatalf("a: desired=%s source=%s err=%v", desired, source, err)
+	}
+	desired, _, err = r.effectiveIntent(context.Background(), b)
+	if err != nil || desired != conductorv1alpha1.DesiredResident {
+		t.Fatalf("b: desired=%s err=%v", desired, err)
+	}
+}
+
+// The most urgent resident is admitted even when its demand exceeds capacity
+// (oversized urgent request wins the pool, preserving old winner semantics).
+func TestOversizedUrgentWorkloadStillAdmitted(t *testing.T) {
+	pool := mkPoolSlots(conductorv1alpha1.ManagementManage, 2)
+	big := mkResident("tp4", 10, 4)
+	small := mkResident("tp2", 50, 2)
+	scheme := testScheme(t)
+	client := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(pool, big, small).Build()
+	r := &WorkloadReconciler{Client: client, Clock: clocktesting.NewFakeClock(time.Unix(100, 0))}
+	desired, _, err := r.effectiveIntent(context.Background(), big)
+	if err != nil || desired != conductorv1alpha1.DesiredResident {
+		t.Fatalf("tp4: desired=%s err=%v", desired, err)
+	}
+	desired, _, err = r.effectiveIntent(context.Background(), small)
+	if err != nil || desired != conductorv1alpha1.DesiredStandby {
+		t.Fatalf("tp2: desired=%s err=%v", desired, err)
+	}
+}
+
+// An admitted resident waits for a stranded resident's deployments to drain
+// before occupying (fencing handover).
+func TestAdmittedResidentWaitsForStrandedDrain(t *testing.T) {
+	pool := mkPoolSlots(conductorv1alpha1.ManagementManage, 4)
+	big := mkResident("big-tp3", 10, 3)
+	small := mkResident("small-tp2", 50, 2)
+	smallWorker := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "small-tp2-worker", Namespace: "llm-test"},
+		Spec: appsv1.DeploymentSpec{Replicas: i32(1), Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "small-tp2-worker"}},
+			Template: corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "small-tp2-worker"}}}}}
+	smallHead := smallWorker.DeepCopy()
+	smallHead.Name = "small-tp2-head"
+	scheme := testScheme(t)
+	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pool, big, small, smallWorker, smallHead).Build()
+	r := &WorkloadReconciler{Client: client, Clock: clocktesting.NewFakeClock(time.Unix(100, 0))}
+	pending, err := r.priorityPreemptionPending(context.Background(), big)
+	if err != nil || pending != "small-tp2" {
+		t.Fatalf("pending=%q err=%v", pending, err)
+	}
+	smallWorker.Spec.Replicas = i32(0)
+	smallHead.Spec.Replicas = i32(0)
+	if err := client.Update(context.Background(), smallWorker); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Update(context.Background(), smallHead); err != nil {
+		t.Fatal(err)
+	}
+	pending, err = r.priorityPreemptionPending(context.Background(), big)
+	if err != nil || pending != "" {
+		t.Fatalf("drain did not clear: pending=%q err=%v", pending, err)
+	}
+}
+
+// Two co-residents stay admitted after one re-reconciles (plan stability).
+func TestPlanStableAcrossReconciles(t *testing.T) {
+	pool := mkPoolSlots(conductorv1alpha1.ManagementManage, 4)
+	a := mkResident("flash-a", 90, 2)
+	b := mkResident("flash-b", 80, 2)
+	scheme := testScheme(t)
+	client := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(pool, a, b).Build()
+	r := &WorkloadReconciler{Client: client, Clock: clocktesting.NewFakeClock(time.Unix(100, 0))}
+	for round := 0; round < 3; round++ {
+		for _, w := range []*conductorv1alpha1.ManagedWorkload{a, b} {
+			desired, _, err := r.effectiveIntent(context.Background(), w)
+			if err != nil || desired != conductorv1alpha1.DesiredResident {
+				t.Fatalf("round %d %s: desired=%s err=%v", round, w.Name, desired, err)
+			}
+		}
+	}
+}

@@ -63,6 +63,12 @@ type ResourcePoolSpec struct {
 	Policy         PoolPolicy           `json:"policy,omitempty"`
 }
 
+// ResourcePoolCapacity accounts the pool's schedulable resource in spark
+// units: one spark is one GPU node of the pool. A DeploymentSet workload
+// declares its demand in sparks (DeploymentSetSpec.Sparks, defaulting to its
+// member replica count); arbitration admits residents in priority order
+// until demand would exceed capacity. Slots=0 with no demand declared means
+// one resident owns the pool (the historical winner-takes-all behavior).
 type ResourcePoolCapacity struct {
 	Slots int32 `json:"slots,omitempty"`
 }
@@ -130,6 +136,31 @@ type DeploymentSetSpec struct {
 	// Placement optionally constrains where the member pair starts. Empty
 	// keeps placement entirely with the scheduler.
 	Placement *PlacementSpec `json:"placement,omitempty"`
+	// Sparks is this workload's demand against the pool's spark capacity
+	// (ResourcePoolCapacity.Slots). Zero defaults to the sum of member
+	// replicas (a TP2 pair demands 2). A workload admits only if the pool
+	// has room for its demand after all higher-urgency residents are
+	// admitted (priority ascending, then name); a recipe that can use more
+	// sparks than it needs simply declares the size it requires to be
+	// admitted — spare capacity stays available to smaller workloads.
+	Sparks int32 `json:"sparks,omitempty"`
+}
+
+// DeploymentSetSparks returns the workload's spark demand against its pool's
+// capacity: the declared Sparks, or the sum of member replicas when unset.
+func (s DeploymentSetSpec) DeploymentSetSparks() int32 {
+	if s.Sparks > 0 {
+		return s.Sparks
+	}
+	total := int32(0)
+	for i := range s.Members {
+		r := s.Members[i].Replicas
+		if r == 0 {
+			r = 1
+		}
+		total += r
+	}
+	return total
 }
 
 // PlacementSpec selects a placement preference for a DeploymentSet pair.
