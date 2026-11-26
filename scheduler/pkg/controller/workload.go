@@ -442,8 +442,10 @@ func (r *WorkloadReconciler) priorityPreemptionPending(ctx context.Context, work
 		// not waiting on another workload's deployments.
 		return "", nil
 	}
-	// Admitted: wait until every non-admitted resident has released its
+	// Admitted: wait until every STRANDED resident has released its
 	// deployments (requireFencing forbids double-occupancy handover).
+	// Fellow admitted residents hold their own capacity by definition of the
+	// plan — waiting on them would deadlock co-residency.
 	var workloads conductorv1alpha1.ManagedWorkloadList
 	if err := r.List(ctx, &workloads, client.InNamespace(workload.Namespace)); err != nil {
 		return "", err
@@ -452,7 +454,7 @@ func (r *WorkloadReconciler) priorityPreemptionPending(ctx context.Context, work
 		if candidate.Name == workload.Name || candidate.Spec.PoolRef != workload.Spec.PoolRef || candidate.Spec.DesiredState != conductorv1alpha1.DesiredResident || candidate.Spec.Paused {
 			continue
 		}
-		if candidate.Spec.Priority < workload.Spec.Priority || (candidate.Spec.Priority == workload.Spec.Priority && candidate.Name < workload.Name) {
+		if plan[candidate.Name] == conductorv1alpha1.DesiredResident {
 			continue
 		}
 		if candidate.Spec.Driver.DeploymentSet == nil {

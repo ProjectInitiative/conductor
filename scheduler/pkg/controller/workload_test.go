@@ -600,3 +600,25 @@ func TestPlanStableAcrossReconciles(t *testing.T) {
 		}
 	}
 }
+
+
+// Two admitted residents co-exist: neither waits on the other (the
+// co-residency deadlock regression — an admitted workload must only wait
+// for STRANDED residents to drain, never for fellow admitted ones).
+func TestAdmittedResidentsDoNotWaitOnEachOther(t *testing.T) {
+	pool := mkPoolSlots(conductorv1alpha1.ManagementManage, 4)
+	a := mkResident("flash-a", 90, 2)
+	b := mkResident("flash-b", 80, 2)
+	aWorker := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "flash-a-worker", Namespace: "llm-test"},
+		Spec: appsv1.DeploymentSpec{Replicas: i32(1), Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "flash-a-worker"}},
+			Template: corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "flash-a-worker"}}}}}
+	aHead := aWorker.DeepCopy()
+	aHead.Name = "flash-a-head"
+	scheme := testScheme(t)
+	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pool, a, b, aWorker, aHead).Build()
+	r := &WorkloadReconciler{Client: client, Clock: clocktesting.NewFakeClock(time.Unix(100, 0))}
+	pending, err := r.priorityPreemptionPending(context.Background(), b)
+	if err != nil || pending != "" {
+		t.Fatalf("b waits on admitted a: pending=%q err=%v", pending, err)
+	}
+}
