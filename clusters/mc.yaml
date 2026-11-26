@@ -13,4 +13,4 @@ apps:
     # (9973764): skip nodes hosting foreign GPU pods; recovery re-places.
     # Immutable multi-arch OCI index with ContainersRunning and status-conflict
     # retry fixes. Pin the index, not a platform leaf.
-    image: ghcr.io/projectinitiative/conductor:sha-7b2c32e@sha256:b2cd54c5811c5072d7554f3e395a6ed45cdce5279a5da8236447eaf842152635
+    image: ghcr.io/projectinitiative/conductor:sha-d74a139@sha256:1721b9ebacbf1d0992b30447bd7828ea26ac90084ee0ff7e8fa41c2b1c93d4b4
