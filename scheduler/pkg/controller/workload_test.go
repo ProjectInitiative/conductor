@@ -601,7 +601,6 @@ func TestPlanStableAcrossReconciles(t *testing.T) {
 	}
 }
 
-
 // Two admitted residents co-exist: neither waits on the other (the
 // co-residency deadlock regression — an admitted workload must only wait
 // for STRANDED residents to drain, never for fellow admitted ones).
